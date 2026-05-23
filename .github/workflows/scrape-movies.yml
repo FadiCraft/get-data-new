@@ -1,19 +1,22 @@
 name: Scrape Arabic Movies
 
+permissions: write-all
+
 on:
   schedule:
-    - cron: '0 */6 * * *'  # كل 6 ساعات
-  workflow_dispatch:  # تشغيل يدوي
-  push:
-    branches: [ main ]
+    - cron: '0 */12 * * *'  # كل 12 ساعة
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 120  # ساعتين كحد أقصى
     
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -34,12 +37,26 @@ jobs:
     
     - name: Scrape movies
       run: node scrape-movies.js
+      env:
+        DEBUG: pw:api
+    
+    - name: Upload movies data as artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: movies-data
+        path: movies.json
+        retention-days: 30
     
     - name: Commit and push changes
+      if: success()
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
         git add movies.json
-        git diff --quiet && git diff --staged --quiet || (git commit -m "📊 Auto-update movies data [skip ci]" && git push)
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if git diff --quiet && git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "📊 تحديث بيانات الأفلام $(date +'%Y-%m-%d %H:%M') [skip ci]"
+          git push
+        fi
