@@ -16,12 +16,12 @@ async function scrapeMovies() {
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         locale: 'ar-SA',
         timezoneId: 'Asia/Riyadh',
+        viewport: { width: 1920, height: 1080 },
     });
 
     const page = await context.newPage();
     
     try {
-        // إخفاء أننا بوت
         await page.addInitScript(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => false });
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
@@ -29,10 +29,10 @@ async function scrapeMovies() {
             window.chrome = { runtime: {} };
         });
 
-        // حظر الصور والفيديوهات لتسريع التحميل
+        // حظر الصور فقط لتسريع التحميل مع إبقاء الجافاسكربت
         await page.route('**/*', (route) => {
             const type = route.request().resourceType();
-            if (['image', 'font', 'media'].includes(type)) {
+            if (type === 'image') {
                 route.abort();
             } else {
                 route.continue();
@@ -41,20 +41,26 @@ async function scrapeMovies() {
 
         console.log('🔄 تحميل الصفحة الرئيسية...');
         await page.goto('https://m.asd.ink/category/arabic-movies-14/', {
-            waitUntil: 'networkidle',
+            waitUntil: 'domcontentloaded',
             timeout: 60000,
         });
 
-        // انتظار Cloudflare
-        console.log('⏳ انتظار تجاوز الحماية...');
-        await page.waitForTimeout(8000);
+        console.log('⏳ انتظار تحميل الصفحة...');
+        await page.waitForTimeout(10000);
 
-        // تمرير لتحميل كل الأفلام
-        console.log('📜 تمرير الصفحة...');
+        // التحقق من وجود الأفلام
+        const moviesExist = await page.$('.movie__block');
+        if (!moviesExist) {
+            console.log('⚠️ Cloudflare مانع التحميل، جاري المحاولة مرة أخرى...');
+            await page.waitForTimeout(10000);
+        }
+
+        // تمرير الصفحة
+        console.log('📜 تمرير الصفحة لتحميل الأفلام...');
         await page.evaluate(async () => {
             await new Promise((resolve) => {
                 let totalHeight = 0;
-                const distance = 400;
+                const distance = 300;
                 const timer = setInterval(() => {
                     window.scrollBy(0, distance);
                     totalHeight += distance;
@@ -62,12 +68,12 @@ async function scrapeMovies() {
                         clearInterval(timer);
                         resolve();
                     }
-                }, 1000);
+                }, 800);
             });
         });
         await page.waitForTimeout(3000);
 
-        // استخراج الأفلام مع روابط المشاهدة
+        // استخراج الأفلام مع روابطها
         console.log('📋 استخراج قائمة الأفلام...');
         const movies = await page.evaluate(() => {
             const items = document.querySelectorAll('li .item__contents');
@@ -85,13 +91,14 @@ async function scrapeMovies() {
 
                     if (link && title) {
                         const movieUrl = link.href;
-                        // استخراج رابط المشاهدة من الرابط الأساسي
-                        const watchUrl = movieUrl.replace(/\/$/, '') + '/watch/';
+                        // استخراج الرابط المختصر للمشاهدة من الرابط الأساسي
+                        // نجرب نحصل على صفحة المشاهدة بنفس النمط
+                        const baseWatchUrl = movieUrl.replace(/\/$/, '') + '/watch/';
                         
                         moviesList.push({
                             title: title.textContent.trim(),
                             url: movieUrl,
-                            watch_url: watchUrl,
+                            watch_url: baseWatchUrl,
                             image: img ? img.src : null,
                             image_alt: img ? img.alt : null,
                             category: category ? category.textContent.trim() : null,
@@ -108,95 +115,128 @@ async function scrapeMovies() {
             return moviesList;
         });
 
-        console.log(`✅ تم العثور على ${movies.length} فيلم`);
+        console.log(`✅ تم العثور على ${movies.length} فيلم\n`);
 
-        // استخراج السيرفرات لكل فيلم
-        console.log('\n🖥️ بدء استخراج السيرفرات...\n');
+        // الآن نستخرج السيرفرات لكل فيلم
+        console.log('🖥️ بدء استخراج السيرفرات...\n');
 
+        // فتح صفحة جديدة لكل فيلم لتجنب مشاكل Cloudflare
         for (let i = 0; i < movies.length; i++) {
             const movie = movies[i];
             console.log(`[${i + 1}/${movies.length}] ${movie.title}`);
 
+            const moviePage = await context.newPage();
+            
+            // إضافة نفس السكربتات للصفحة الجديدة
+            await moviePage.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                window.chrome = { runtime: {} };
+            });
+
+            // حظر الصور
+            await moviePage.route('**/*', (route) => {
+                if (route.request().resourceType() === 'image') {
+                    route.abort();
+                } else {
+                    route.continue();
+                }
+            });
+
             try {
-                // تحميل صفحة المشاهدة
-                await page.goto(movie.watch_url, {
-                    waitUntil: 'networkidle',
+                // تحميل صفحة الفيلم أولاً
+                console.log('  🔗 تحميل صفحة الفيلم...');
+                await moviePage.goto(movie.url, {
+                    waitUntil: 'domcontentloaded',
                     timeout: 30000,
                 });
-                await page.waitForTimeout(3000);
+                await moviePage.waitForTimeout(5000);
 
-                // استخراج جميع الجودات المتاحة
-                const qualities = await page.evaluate(() => {
-                    const qualityItems = document.querySelectorAll('.qualities__list li');
-                    return Array.from(qualityItems).map(item => ({
-                        quality: item.getAttribute('data-quality'),
-                        title: item.getAttribute('data-title'),
-                        isActive: item.classList.contains('active')
-                    }));
+                // استخراج رابط المشاهدة الحقيقي من الصفحة
+                const realWatchUrl = await moviePage.evaluate(() => {
+                    const watchLink = document.querySelector('a.watch__btn');
+                    return watchLink ? watchLink.href : null;
                 });
 
-                if (qualities.length > 0) {
-                    console.log(`  📺 الجودات المتاحة: ${qualities.map(q => q.quality + 'p').join(', ')}`);
+                if (realWatchUrl) {
+                    console.log('  ✅ تم العثور على رابط المشاهدة');
                     
-                    movie.servers = {};
+                    // تحميل صفحة المشاهدة
+                    console.log('  🔗 تحميل صفحة المشاهدة...');
+                    await moviePage.goto(realWatchUrl, {
+                        waitUntil: 'domcontentloaded',
+                        timeout: 30000,
+                    });
+                    await moviePage.waitForTimeout(6000);
 
-                    // استخراج السيرفرات لكل جودة
-                    for (const quality of qualities) {
-                        try {
-                            // النقر على الجودة إذا لم تكن نشطة
-                            if (!quality.isActive) {
-                                const qualitySelector = `li[data-quality="${quality.quality}"]`;
-                                await page.waitForSelector(qualitySelector, { timeout: 5000 });
-                                await page.click(qualitySelector);
-                                await page.waitForTimeout(2000);
+                    // استخراج الجودات والسيرفرات
+                    const qualities = await moviePage.evaluate(() => {
+                        const qualityItems = document.querySelectorAll('.qualities__list li');
+                        if (qualityItems.length === 0) return [];
+                        
+                        return Array.from(qualityItems).map(item => ({
+                            quality: item.getAttribute('data-quality'),
+                            title: item.getAttribute('data-title'),
+                            isActive: item.classList.contains('active')
+                        }));
+                    });
+
+                    if (qualities.length > 0) {
+                        console.log(`  📺 الجودات: ${qualities.map(q => q.quality + 'p').join(', ')}`);
+                        movie.servers = {};
+
+                        for (const quality of qualities) {
+                            try {
+                                if (!quality.isActive) {
+                                    await moviePage.click(`li[data-quality="${quality.quality}"]`);
+                                    await moviePage.waitForTimeout(2000);
+                                }
+
+                                const servers = await moviePage.evaluate((qu) => {
+                                    const items = document.querySelectorAll(`.servers__list li[data-qu="${qu}"]`);
+                                    return Array.from(items).map(server => ({
+                                        name: server.querySelector('span')?.textContent.trim() || 'Unknown',
+                                        server_id: server.getAttribute('data-server'),
+                                        quality: server.getAttribute('data-qu'),
+                                        link: server.getAttribute('data-link'),
+                                    }));
+                                }, quality.quality);
+
+                                movie.servers[`${quality.quality}p`] = servers;
+                                console.log(`  ✅ ${quality.quality}p: ${servers.length} سيرفر`);
+                            } catch (error) {
+                                console.log(`  ⚠️ ${quality.quality}p: ${error.message}`);
+                                movie.servers[`${quality.quality}p`] = [];
                             }
-
-                            // استخراج السيرفرات
-                            const servers = await page.evaluate((qu) => {
-                                const serverItems = document.querySelectorAll(`.servers__list li[data-qu="${qu}"]`);
-                                return Array.from(serverItems).map(server => ({
-                                    name: server.querySelector('span')?.textContent.trim() || 'Unknown',
-                                    server_id: server.getAttribute('data-server'),
-                                    quality: server.getAttribute('data-qu'),
-                                    link: server.getAttribute('data-link'),
-                                }));
-                            }, quality.quality);
-
-                            movie.servers[`${quality.quality}p`] = servers;
-                            console.log(`  ✅ ${quality.quality}p: ${servers.length} سيرفر`);
-                        } catch (error) {
-                            console.log(`  ⚠️ ${quality.quality}p: فشل - ${error.message}`);
-                            movie.servers[`${quality.quality}p`] = [];
                         }
+                    } else {
+                        console.log('  ⚠️ لم يتم العثور على سيرفرات');
+                        movie.servers = {};
                     }
                 } else {
-                    console.log('  ⚠️ لم يتم العثور على سيرفرات');
+                    console.log('  ⚠️ رابط المشاهدة غير موجود');
                     movie.servers = {};
                 }
 
-                // إضافة تاريخ الاستخراج
                 movie.scraped_at = new Date().toISOString();
-
-                // حفظ البيانات بعد كل فيلم (احتياط)
-                fs.writeFileSync('movies.json', JSON.stringify(movies, null, 2), 'utf-8');
-
-                // تأخير بين الأفلام
-                if (i < movies.length - 1) {
-                    console.log('  ⏳ انتظار 3 ثوان...');
-                    await page.waitForTimeout(3000);
-                }
 
             } catch (error) {
                 console.log(`  ❌ خطأ: ${error.message}`);
                 movie.servers = {};
                 movie.scraped_at = new Date().toISOString();
-                movie.error = error.message;
+            } finally {
+                await moviePage.close();
             }
 
-            console.log('');
+            // حفظ بعد كل فيلم
+            fs.writeFileSync('movies.json', JSON.stringify(movies, null, 2), 'utf-8');
+            
+            if (i < movies.length - 1) {
+                console.log('  ⏳ انتظار...\n');
+                await page.waitForTimeout(4000);
+            }
         }
 
-        // حفظ نهائي
         fs.writeFileSync('movies.json', JSON.stringify(movies, null, 2), 'utf-8');
         
         const totalServers = movies.reduce((sum, m) => {
@@ -206,12 +246,11 @@ async function scrapeMovies() {
             return sum;
         }, 0);
         
-        console.log('✨ الانتهاء!');
-        console.log(`📊 الأفلام: ${movies.length}`);
-        console.log(`🖥️ السيرفرات: ${totalServers}`);
+        console.log('\n✨ انتهى!');
+        console.log(`📊 أفلام: ${movies.length} | 🖥️ سيرفرات: ${totalServers}`);
 
     } catch (error) {
-        console.error('❌ خطأ:', error.message);
+        console.error('❌', error.message);
         process.exit(1);
     } finally {
         await browser.close();
