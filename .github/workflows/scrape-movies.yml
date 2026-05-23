@@ -1,0 +1,45 @@
+name: Scrape Arabic Movies
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # كل 6 ساعات
+  workflow_dispatch:  # تشغيل يدوي
+  push:
+    branches: [ main ]
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Install dependencies
+      run: |
+        npm init -y
+        npm install playwright @playwright/test
+    
+    - name: Install Playwright browsers
+      run: npx playwright install chromium
+    
+    - name: Install system dependencies
+      run: |
+        npx playwright install-deps chromium
+    
+    - name: Scrape movies
+      run: node scrape-movies.js
+    
+    - name: Commit and push changes
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+        git add movies.json
+        git diff --quiet && git diff --staged --quiet || (git commit -m "📊 Auto-update movies data [skip ci]" && git push)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
