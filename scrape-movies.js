@@ -22,13 +22,13 @@ function decodeServerLink(rawLink) {
     }
 }
 
-// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على نطاق الـ iframe
+// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على نطاق الـ iframe (كلما قل الوزن، زادت الأولوية)
 function getServerPriority(url) {
     const lowerUrl = url.toLowerCase();
     if (lowerUrl.includes('vidmoly')) return 1; // الأولوية الأولى
     if (lowerUrl.includes('vidara')) return 2;  // الأولوية الثانية
     if (lowerUrl.includes('voe')) return 3;     // الأولوية الثالثة
-    return 4;                                   // أي سيرفر آخر
+    return 4;                                   // أي سيرفر آخر يدعم m3u8 ديناميكي
 }
 
 async function scrapeMovies() {
@@ -36,10 +36,10 @@ async function scrapeMovies() {
     const browser = await chromium.launch({
         headless: true,
         args: [
-            '-no-sandbox',
-            '-disable-setuid-sandbox',
-            '-disable-blink-features=AutomationControlled',
-            '-window-size=1920,1080'
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled',
+            '--window-size=1920,1080'
         ]
     });
 
@@ -99,47 +99,10 @@ async function scrapeMovies() {
         await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         await page.evaluate(() => window.scrollBy(0, 500));
-        await page.waitForTimeout(4000);
+        console.log('⏳ انتظار لفك شيفرة حاوية السيرفرات...');
+        await page.waitForTimeout(7000);
 
-        // 🌟 الخطوة الجديدة: فتح قائمة الجودات واختيار أعلى جودة متاحة
-        try {
-            console.log('🔘 جاري فتح قائمة الجودات...');
-            const qualitySwitcher = page.locator('.quality__swither');
-            
-            if (await qualitySwitcher.count() > 0) {
-                // الضغط على القائمة لفتح خيارات الجودة
-                await qualitySwitcher.click();
-                await page.waitForTimeout(1500);
-
-                // البحث عن أعلى جودة بالترتيب التنازلي المفضل لديك
-                let qualitySelected = false;
-                const targetQualities = ['1080', '720', '480'];
-
-                for (const q of targetQualities) {
-                    const qualityOption = page.locator(`.qualities__list li[data-quality="${q}"]`);
-                    if (await qualityOption.count() > 0) {
-                        console.log(`🎯 تم العثور على جودة ${q}p، جاري النقر عليها...`);
-                        await qualityOption.click();
-                        qualitySelected = true;
-                        break;
-                    }
-                }
-
-                if (!qualitySelected) {
-                    console.log('⚠️ لم يتم العثور على الجودات المستهدفة، سيتم الاعتماد على الجودة الافتراضية.');
-                } else {
-                    console.log('⏳ انتظار تحديث سيرفرات المشاهدة بناءً على الجودة الجديدة...');
-                    await page.waitForTimeout(5000); // وقت كافٍ لتحديث الـ DOM أو جلب السيرفرات الجديدة
-                }
-            } else {
-                console.log('⚠️ لم يتم العثور على زر تبديل الجودة (قد لا يحتوي هذا الفيلم على خيارات متعددة).');
-            }
-        } catch (qError) {
-            console.error('❌ حدث خطأ أثناء محاولة تغيير الجودة:', qError.message);
-        }
-
-        // كشط السيرفرات المحدثة من الـ HTML
-        console.log('🔍 جاري كشط سيرفرات العرض بعد تحديث الجودة...');
+        // كشط السيرفرات الخام من الـ HTML
         const rawServers = await page.evaluate(() => {
             const serverItems = document.querySelectorAll('.servers__list ul li');
             const extracted = [];
@@ -160,6 +123,7 @@ async function scrapeMovies() {
         // تصفية، استبعاد، وفك التشفير
         let processedServers = [];
         for (const srv of rawServers) {
+            // 1. استبعاد سيرفر عرب سيد تماماً بناءً على الاسم المكتوب
             if (srv.name.includes('عرب سيد')) {
                 continue; 
             }
@@ -170,17 +134,17 @@ async function scrapeMovies() {
                 name: srv.name,
                 quality: srv.quality,
                 iframe_url: cleanIframeUrl,
-                priority: getServerPriority(cleanIframeUrl)
+                priority: getServerPriority(cleanIframeUrl) // تحديد رتبة الأولوية
             });
         }
 
-        // إعادة ترتيب المصفوفة تصاعدياً بناءً على رتبة الأولوية (Priority)
+        // 2. إعادة ترتيب المصفوفة تصاعدياً بناءً على رتبة الأولوية (Priority)
         processedServers.sort((a, b) => a.priority - b.priority);
 
-        // إعادة تسمية السيرفرات بشكل مرقم ومنظم (سيرفر 1، سيرفر 2...)
+        // 3. إعادة تسمية السيرفرات بشكل مرقم ومنظم لتطبيقك (سيرفر 1، سيرفر 2...) بعد الترتيب الجديد
         processedServers = processedServers.map((srv, index) => {
             return {
-                name: `سيرفر ${index + 1}`,
+                name: `سيرفر ${index + 1}`, // تضمن أن يبدأ جهازك دائماً برقم 1 كأفضل خيار
                 quality: srv.quality,
                 iframe_url: srv.iframe_url
             };
