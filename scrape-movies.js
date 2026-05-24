@@ -33,6 +33,10 @@ function getServerPriority(url) {
 
 async function scrapeMovies() {
     console.log('🚀 جاري تشغيل المتصفح بوضع التخفي المتقدم...');
+    
+    // يمكنك تفعيل تسجيل الفيديو عن طريق تعيين متغير البيئة RECORD_VIDEO=true
+    const recordVideo = process.env.RECORD_VIDEO === 'true';
+    
     const browser = await chromium.launch({
         headless: true,
         args: [
@@ -48,12 +52,23 @@ async function scrapeMovies() {
         viewport: { width: 1920, height: 1080 },
         locale: 'ar-SA',
         timezoneId: 'Asia/Riyadh',
+        // إعدادات تسجيل الفيديو (اختياري)
+        recordVideo: recordVideo ? {
+            dir: path.join(process.cwd(), 'videos'),
+            size: { width: 1280, height: 720 }
+        } : undefined
     });
 
     const page = await context.newPage();
+    
+    // إنشاء مجلدات اللقطات والفيديو إذا لزم الأمر
     const screenshotDir = path.join(process.cwd(), 'screenshots');
     if (!fs.existsSync(screenshotDir)) {
         fs.mkdirSync(screenshotDir, { recursive: true });
+    }
+    
+    if (recordVideo) {
+        console.log('🔴 بدأ تسجيل الفيديو...');
     }
 
     try {
@@ -117,28 +132,12 @@ async function scrapeMovies() {
         const qualitySwitcher = await page.$('.quality__swither');
         if (!qualitySwitcher) {
             console.log('❌ لم يتم العثور على محول الجودات');
-            await page.screenshot({ path: path.join(screenshotDir, '4-no-quality-switcher.png'), fullPage: true });
             return;
         }
 
-        // فتح قائمة الجودات المنسدلة
-        console.log('🔽 جاري فتح قائمة الجودات المنسدلة...');
-        await page.screenshot({ path: path.join(screenshotDir, '4-before-click-quality.png'), fullPage: true });
+        // --- بداية التعديل الأساسي ---
         
-        // النقر على زر فتح القائمة
-        try {
-            await page.click('.quality__swither .title');
-            console.log('✅ تم النقر على عنوان الجودة');
-        } catch (e) {
-            console.log('⚠️ فشل النقر على العنوان، جاري تجربة النقر على العنصر بالكامل...');
-            await page.click('.quality__swither');
-        }
-        
-        await page.waitForTimeout(2000);
-        await page.screenshot({ path: path.join(screenshotDir, '5-quality-menu-opened.png'), fullPage: true });
-        console.log('📸 تم التقاط صورة بعد فتح قائمة الجودات');
-
-        // استخراج الجودات المتاحة
+        // استخراج جميع الجودات المتاحة أولاً
         const availableQualities = await page.evaluate(() => {
             const qualityElements = document.querySelectorAll('.qualities__list li');
             const qualities = [];
@@ -149,64 +148,92 @@ async function scrapeMovies() {
                     qualities.push({
                         quality: quality,
                         title: title || '',
-                        isActive: li.classList.contains('active'),
-                        isVisible: li.offsetParent !== null // التحقق من الظهور
+                        isActive: li.classList.contains('active')
                     });
                 }
             });
             return qualities;
         });
 
-        console.log(`📊 تم العثور على ${availableQualities.length} جودة: ${availableQualities.map(q => q.quality + 'p (visible: ' + q.isVisible + ')').join(', ')}`);
+        console.log(`📊 تم العثور على ${availableQualities.length} جودة: ${availableQualities.map(q => q.quality + 'p').join(', ')}`);
+
+        // دالة مساعدة لفتح قائمة الجودات
+        async function openQualityMenu() {
+            console.log('   🔽 فتح قائمة الجودات المنسدلة...');
+            try {
+                await page.click('.quality__swither .title');
+            } catch (e) {
+                console.log('   ⚠️ النقر على العنوان فشل، محاولة النقر على الأيقونة...');
+                try {
+                    await page.click('.quality__swither .icon');
+                } catch (e2) {
+                    console.log('   ⚠️ محاولة أخيرة لفتح القائمة...');
+                    await page.click('.quality__swither');
+                }
+            }
+            await page.waitForTimeout(1000);
+        }
+
+        // دالة مساعدة لاختيار جودة معينة
+        async function selectQuality(qualityValue) {
+            console.log(`   👆 جاري اختيار الجودة ${qualityValue}p...`);
+            
+            // ننتظر حتى تكون قائمة الجودات ظاهرة
+            await page.waitForSelector('.qualities__list', { state: 'visible', timeout: 5000 });
+            
+            // ننتظر العنصر المحدد للجودة وننقر عليه
+            const qualitySelector = `.qualities__list li[data-quality="${qualityValue}"]`;
+            try {
+                await page.click(qualitySelector);
+                console.log(`   ✅ تم النقر على الجودة ${qualityValue}p`);
+            } catch (e) {
+                console.log(`   ⚠️ فشل النقر المباشر، جاري استخدام JavaScript...`);
+                await page.evaluate((q) => {
+                    const element = document.querySelector(`.qualities__list li[data-quality="${q}"]`);
+                    if (element) element.click();
+                }, qualityValue);
+            }
+            
+            // انتظار ذكي: ننتظر حتى تظهر السيرفرات أو حتى ينتهي أي تحميل
+            console.log(`   ⏳ انتظار تحميل سيرفرات ${qualityValue}p...`);
+            try {
+                // الانتظار حتى يظهر على الأقل عنصر سيرفر واحد جديد
+                await page.waitForSelector('.servers__list ul li[data-link]', { 
+                    state: 'attached', 
+                    timeout: 15000 
+                });
+                // انتظار إضافي قصير للتأكد من تحميل جميع السيرفرات
+                await page.waitForTimeout(2000);
+                console.log(`   ✅ تم تحميل السيرفرات بنجاح.`);
+            } catch (waitError) {
+                console.log(`   ⚠️ لم يتم اكتشاف سيرفرات جديدة بعد 15 ثانية. المتابعة بكشط الصفحة الحالية...`);
+                await page.screenshot({ 
+                    path: path.join(screenshotDir, `timeout-waiting-servers-${qualityValue}p.png`), 
+                    fullPage: true 
+                });
+            }
+        }
 
         // المرور على كل جودة واستخراج السيرفرات
         for (let i = 0; i < availableQualities.length; i++) {
             const qualityInfo = availableQualities[i];
             console.log(`\n🔄 جاري معالجة الجودة: ${qualityInfo.quality}p...`);
 
-            // إذا لم تكن الجودة محددة مسبقاً، نختارها
-            if (!qualityInfo.isActive) {
-                // إعادة فتح القائمة إذا كانت مقفلة
-                if (i > 0) {
-                    console.log('   🔽 إعادة فتح قائمة الجودات...');
-                    try {
-                        await page.click('.quality__swither .title');
-                        await page.waitForTimeout(1000);
-                    } catch (e) {
-                        console.log('   ⚠️ محاولة بديلة لفتح القائمة...');
-                        await page.click('.quality__swither');
-                        await page.waitForTimeout(1000);
-                    }
-                }
-
-                console.log(`   👆 جاري اختيار الجودة ${qualityInfo.quality}p...`);
-                await page.screenshot({ 
-                    path: path.join(screenshotDir, `6-before-select-${qualityInfo.quality}p.png`), 
-                    fullPage: true 
-                });
-
-                // تجربة طرق مختلفة للنقر
-                try {
-                    await page.click(`.qualities__list li[data-quality="${qualityInfo.quality}"]`);
-                    console.log(`   ✅ تم النقر على الجودة ${qualityInfo.quality}p`);
-                } catch (e) {
-                    console.log(`   ⚠️ فشل النقر المباشر، جاري استخدام JavaScript...`);
-                    await page.evaluate((quality) => {
-                        const element = document.querySelector(`.qualities__list li[data-quality="${quality}"]`);
-                        if (element) {
-                            element.click();
-                        }
-                    }, qualityInfo.quality);
-                }
-                
-                await page.waitForTimeout(3000);
-                await page.screenshot({ 
-                    path: path.join(screenshotDir, `7-after-select-${qualityInfo.quality}p.png`), 
-                    fullPage: true 
-                });
+            // الخطوة 1: فتح قائمة الجودات إذا كنا بحاجة لتغيير الجودة
+            if (i > 0) { // القائمة تكون مفتوحة افتراضياً لأول جودة، نعيد فتحها للجودات الأخرى
+                await openQualityMenu();
             }
 
-            // كشط السيرفرات
+            // الخطوة 2: اختيار الجودة المطلوبة
+            await selectQuality(qualityInfo.quality);
+
+            // الخطوة 3: أخذ لقطة شاشة لتوثيق الحالة
+            await page.screenshot({ 
+                path: path.join(screenshotDir, `servers-loaded-${qualityInfo.quality}p.png`), 
+                fullPage: true 
+            });
+
+            // الخطوة 4: كشط السيرفرات
             const rawServers = await page.evaluate(() => {
                 const serverItems = document.querySelectorAll('.servers__list ul li');
                 const extracted = [];
@@ -223,6 +250,8 @@ async function scrapeMovies() {
                 });
                 return extracted;
             });
+
+            console.log(`   🔍 تم العثور على ${rawServers.length} سيرفر خام.`);
 
             // تصفية وفك التشفير
             let processedServers = [];
@@ -251,7 +280,7 @@ async function scrapeMovies() {
                 servers: processedServers
             });
 
-            console.log(`   ✅ تم استخراج ${processedServers.length} سيرفر للجودة ${qualityInfo.quality}p`);
+            console.log(`   ✅ تم معالجة وحفظ ${processedServers.length} سيرفر.`);
         }
 
         // عرض ملخص النتائج
@@ -270,7 +299,6 @@ async function scrapeMovies() {
             'utf-8'
         );
         console.log(`\n📁 تم حفظ الملف في: single_movie_result.json`);
-        console.log(`📁 مجلد الصور: ${screenshotDir}`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
@@ -281,6 +309,9 @@ async function scrapeMovies() {
         console.log('📸 تم التقاط صورة لحالة الخطأ');
     } finally {
         await browser.close();
+        if (recordVideo) {
+            console.log('🔴 تم إيقاف تسجيل الفيديو.');
+        }
     }
 }
 
