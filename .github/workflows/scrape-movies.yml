@@ -32,7 +32,9 @@ jobs:
       run: |
         npx playwright install-deps chromium
     
-    - name: Scrape movies
+    - name: Scrape movies (with optional video recording)
+      env:
+        RECORD_VIDEO: ${{ vars.RECORD_VIDEO || 'false' }} # يمكنك تفعيله من إعدادات المتغيرات
       run: node scrape-movies.js
     
     - name: Upload Debug Screenshots & JSON
@@ -41,6 +43,14 @@ jobs:
       with:
         name: playwright-debug-files
         path: |
-          *.png
+          screenshots/
           single_movie_result.json
+        retention-days: 2
+    
+    - name: Upload Videos (if enabled)
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: playwright-videos
+        path: videos/
         retention-days: 2
