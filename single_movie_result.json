@@ -2,5 +2,26 @@
   "title": "فيلم سينما منتصف الليل ( 2026 )",
   "movie_url": "https://m.arabseed.show/%d9%81%d9%8a%d9%84%d9%85-%d8%b3%d9%8a%d9%86%d9%85%d8%a7-%d9%85%d9%86%d8%aa%d8%b5%d9%81-%d8%a7%d9%84%d9%84%d9%8a%d9%84-2026/",
   "watch_url": "https://m.arabseed.show/%d9%81%d9%8a%d9%84%d9%85-%d8%b3%d9%8a%d9%86%d9%85%d8%a7-%d9%85%d9%86%d8%aa%d8%b5%d9%81-%d8%a7%d9%84%d9%84%d9%8a%d9%84-2026/watch/",
-  "servers": []
+  "servers": [
+    {
+      "name": "سيرفر 1",
+      "quality": "480",
+      "iframe_url": "https://vidmoly.biz/embed-6x1slmx13iii.html"
+    },
+    {
+      "name": "سيرفر 2",
+      "quality": "480",
+      "iframe_url": "https://vidara.to/e/PDA8Vba1SV1uP"
+    },
+    {
+      "name": "سيرفر 3",
+      "quality": "480",
+      "iframe_url": "https://voe.sx/e/bfei0oqwkzgl"
+    },
+    {
+      "name": "سيرفر 4",
+      "quality": "480",
+      "iframe_url": "https://bysezejataos.com/e/w8or2n2s0flp"
+    }
+  ]
 }
