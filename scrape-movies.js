@@ -2,9 +2,9 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-// تكوين المتصفح لتجاوز Cloudflare
+// تكوين المتصفح لتجاوز Cloudflare والحماية
 const browserConfig = {
-    headless: true, // يمكنك تغييرها إلى false إذا كنت تريد رؤية المتصفح وهو يعمل أمامك
+    headless: true, 
     args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -46,7 +46,7 @@ async function scrapeMovies() {
         console.log('🔄 جاري تحميل الصفحة الرئيسية للأفلام...');
         await simulateHumanBehavior(page);
         
-        // تعطيل تحميل الصور لتسريع العملية
+        // تعطيل تحميل الصور والخطوط لتسريع العملية
         await page.route('**/*', (route) => {
             const request = route.request();
             if (request.resourceType() === 'image' || request.resourceType() === 'font') {
@@ -62,8 +62,8 @@ async function scrapeMovies() {
             timeout: 60000,
         });
 
-        console.log('⏳ في انتظار تجاوز حماية Cloudflare...');
-        await page.waitForTimeout(5000);
+        console.log('⏳ في انتظار تجاوز حماية Cloudflare وتثبيت الصفحة...');
+        await page.waitForTimeout(6000);
 
         // استخراج بيانات الأفلام الأساسية
         const movies = await page.evaluate(() => {
@@ -76,15 +76,19 @@ async function scrapeMovies() {
                     const titleElement = element.querySelector('h3');
 
                     if (linkElement && titleElement) {
-                        let watchUrl = linkElement.href;
-                        // استبدال كلمة movie بـ watch للذهاب لصفحة المشاهدة مباشرة
-                        if (watchUrl.includes('/movie/')) {
-                            watchUrl = watchUrl.replace('/movie/', '/watch/');
+                        let originalUrl = linkElement.href;
+                        let watchUrl = originalUrl;
+
+                        // معالجة الرابط لإضافة /watch/ في النهاية بطريقة ذكية تتماشى مع الروابط المرمزة (Encoded URIs)
+                        if (watchUrl.endsWith('/')) {
+                            watchUrl = watchUrl + 'watch/';
+                        } else {
+                            watchUrl = watchUrl + '/watch/';
                         }
 
                         moviesData.push({
                             title: titleElement.textContent.trim(),
-                            movie_url: linkElement.href,
+                            movie_url: originalUrl,
                             watch_url: watchUrl,
                             servers: []
                         });
@@ -102,68 +106,79 @@ async function scrapeMovies() {
             return;
         }
 
-        console.log(`🎬 تم العثور على ${movies.length} فيلم الكلي.`);
-        console.log(`🧪 [وضع التجربة]: سيتم فحص أول فيلم فقط وهو: (${movies[0].title})`);
+        console.log(`🎬 تم العثور على ${movies.length} فيلم. جاري بدء استخراج سيرفرات المشاهدة...`);
 
-        // فحص الفيلم الأول فقط للتجربة
-        const movie = movies[0];
-        console.log(`🔗 جاري فتح صفحة المشاهدة للتجربة: ${movie.watch_url}`);
-        
-        try {
-            await page.goto(movie.watch_url, { waitUntil: 'networkidle', timeout: 30000 });
-            await page.waitForTimeout(3000); // انتظار إضافي للتأكد من تحميل السيرفرات بالكامل
+        // حلقة تكرارية للمرور على كل الأفلام المستخرجة بدلاً من فيلم واحد
+        for (let i = 0; i < movies.length; i++) {
+            const movie = movies[i];
+            console.log(`\n================ [ ${i + 1} / ${movies.length} ] ================`);
+            console.log(`🎥 الفيلم الحالي: ${movie.title}`);
+            console.log(`🔗 رابط المشاهدة: ${movie.watch_url}`);
+            
+            try {
+                // الانتقال لصفحة المشاهدة وانتظار استقرار الشبكة
+                await page.goto(movie.watch_url, { waitUntil: 'networkidle', timeout: 45000 });
+                
+                // محاكاة سلوك بشري بالتمرير لأسفل لضمان تفعيل لودر السيرفرات إن وجد
+                await page.evaluate(() => window.scrollBy(0, 400));
+                
+                // ترك مهلة زمنية مريحة لكي تستقر الصفحة وتحمل الأكواد الديناميكية بالكامل
+                await page.waitForTimeout(4000); 
 
-            // استخراج السيرفرات
-            const servers = await page.evaluate(() => {
-                const serverItems = document.querySelectorAll('.servers__list ul li');
-                const extractedServers = [];
+                // كشط السيرفرات بناءً على هيكل الـ HTML الجديد لصفحة المشاهدة
+                const servers = await page.evaluate(() => {
+                    const serverItems = document.querySelectorAll('.servers__list ul li');
+                    const extractedServers = [];
 
-                serverItems.forEach((li) => {
-                    const nameElement = li.querySelector('span');
-                    const link = li.getAttribute('data-link');
-                    const quality = li.getAttribute('data-qu');
-                    
-                    if (link) {
-                        extractedServers.push({
-                            name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
-                            link: link,
-                            quality: quality || 'unknown'
-                        });
-                    }
+                    serverItems.forEach((li) => {
+                        const nameElement = li.querySelector('span');
+                        const link = li.getAttribute('data-link');
+                        const quality = li.getAttribute('data-qu');
+                        const serverIndex = li.getAttribute('data-server');
+                        const postId = li.getAttribute('data-post');
+                        
+                        if (link) {
+                            extractedServers.push({
+                                server_id: serverIndex || '0',
+                                post_id: postId || '',
+                                name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
+                                link: link.trim(),
+                                quality: quality || 'unknown'
+                            });
+                        }
+                    });
+                    return extractedServers;
                 });
-                return extractedServers;
-            });
 
-            movie.servers = servers;
+                movie.servers = servers;
 
-            if (servers.length > 0) {
-                console.log(`✅ نجحت التجربة! تم استخراج ${servers.length} سيرفر لهذا الفيلم.`);
-                console.log('📋 السيرفرات المستخرجة:', servers);
-            } else {
-                console.log('⚠️ تم فتح الصفحة ولكن لم يتم العثور على أي سيرفرات داخل الـ HTML. سيتم أخذ لقطة شاشة للتحقق.');
-                await page.screenshot({ path: `no-servers-found-${Date.now()}.png`, fullPage: true });
+                if (servers.length > 0) {
+                    console.log(`✅ تم استخراج ${servers.length} سيرفر بنجاح لهذا الفيلم.`);
+                } else {
+                    console.log('⚠️ لم يتم العثور على سيرفرات داخل الـ HTML، قد تحتاج الصفحة لوقت أطول أو السيرفرات محمية.');
+                }
+
+                // انتظار عشوائي صغير بين كل فيلم وفيلم لتجنب كشف العمليات المتتالية (Anti-Scraping Rate Limit)
+                const randomDelay = Math.floor(Math.random() * 2000) + 1500; 
+                await page.waitForTimeout(randomDelay);
+
+            } catch (movieError) {
+                console.error(`❌ فشل استخراج سيرفرات الفيلم [${movie.title}]: ${movieError.message}`);
             }
-
-        } catch (movieError) {
-            console.error(`❌ فشل استخراج سيرفرات الفيلم: ${movieError.message}`);
-            // التقاط صورة للمتصفح عند حدوث الخطأ لمعرفة السبب
-            const screenshotName = `error-${movie.title.replace(/[^a-zA-Z0-9]/g, '_')}.png`;
-            await page.screenshot({ path: screenshotName, fullPage: true });
-            console.log(`📸 تم حفظ لقطة شاشة للخطأ باسم: ${screenshotName}`);
         }
 
-        // حفظ نتيجة الفيلم التجريبي في ملف الـ JSON لتعاين البنية بنفسك
+        // حفظ البيانات النهائية لجميع الأفلام مع سيرفراتها
         const outputData = {
             metadata: {
                 scraped_at: new Date().toISOString(),
-                test_mode: true,
-                status: movie.servers.length > 0 ? 'success' : 'failed'
+                total_movies: movies.length,
+                status: 'completed'
             },
-            test_movie: movie
+            movies: movies
         };
 
-        fs.writeFileSync(path.join(process.cwd(), 'test_movie_server.json'), JSON.stringify(outputData, null, 2), 'utf-8');
-        console.log(`📁 تم حفظ ملف التجربة في: test_movie_server.json`);
+        fs.writeFileSync(path.join(process.cwd(), 'movies_with_servers.json'), JSON.stringify(outputData, null, 2), 'utf-8');
+        console.log(`\n Archiving Finished! 📁 تم حفظ الملف النهائي بنجاح في: movies_with_servers.json`);
 
     } catch (error) {
         console.error('❌ حدث خطأ عام بالسكريبت:', error);
