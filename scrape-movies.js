@@ -2,7 +2,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-// تكوين المتصفح لتجاوز Cloudflare والحماية
+// تكوين المتصفح لتجاوز الحماية
 const browserConfig = {
     headless: true, 
     args: [
@@ -35,7 +35,7 @@ async function simulateHumanBehavior(page) {
 async function scrapeMovies() {
     const browser = await chromium.launch(browserConfig);
     const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         locale: 'ar-SA',
         timezoneId: 'Asia/Riyadh',
     });
@@ -62,7 +62,7 @@ async function scrapeMovies() {
             timeout: 60000,
         });
 
-        console.log('⏳ في انتظار تجاوز حماية Cloudflare وتثبيت الصفحة...');
+        console.log('⏳ في انتظار تجاوز حماية الموقع واستقرار الصفحة...');
         await page.waitForTimeout(6000);
 
         // استخراج بيانات الأفلام الأساسية
@@ -79,7 +79,6 @@ async function scrapeMovies() {
                         let originalUrl = linkElement.href;
                         let watchUrl = originalUrl;
 
-                        // معالجة الرابط لإضافة /watch/ في النهاية بطريقة ذكية تتماشى مع الروابط المرمزة (Encoded URIs)
                         if (watchUrl.endsWith('/')) {
                             watchUrl = watchUrl + 'watch/';
                         } else {
@@ -108,7 +107,6 @@ async function scrapeMovies() {
 
         console.log(`🎬 تم العثور على ${movies.length} فيلم. جاري بدء استخراج سيرفرات المشاهدة...`);
 
-        // حلقة تكرارية للمرور على كل الأفلام المستخرجة بدلاً من فيلم واحد
         for (let i = 0; i < movies.length; i++) {
             const movie = movies[i];
             console.log(`\n================ [ ${i + 1} / ${movies.length} ] ================`);
@@ -116,16 +114,38 @@ async function scrapeMovies() {
             console.log(`🔗 رابط المشاهدة: ${movie.watch_url}`);
             
             try {
-                // الانتقال لصفحة المشاهدة وانتظار استقرار الشبكة
-                await page.goto(movie.watch_url, { waitUntil: 'networkidle', timeout: 45000 });
+                // الانتقال لصفحة المشاهدة
+                await page.goto(movie.watch_url, { waitUntil: 'domcontentloaded', timeout: 45000 });
                 
-                // محاكاة سلوك بشري بالتمرير لأسفل لضمان تفعيل لودر السيرفرات إن وجد
-                await page.evaluate(() => window.scrollBy(0, 400));
-                
-                // ترك مهلة زمنية مريحة لكي تستقر الصفحة وتحمل الأكواد الديناميكية بالكامل
-                await page.waitForTimeout(4000); 
+                // 1. محاكاة التمرير البشري التدريجي لتحفيز السكربتات الديناميكية للموقع
+                await page.evaluate(async () => {
+                    await new Promise((resolve) => {
+                        let totalHeight = 0;
+                        let distance = 150;
+                        let timer = setInterval(() => {
+                            let scrollHeight = document.body.scrollHeight;
+                            window.scrollBy(0, distance);
+                            totalHeight += distance;
 
-                // كشط السيرفرات بناءً على هيكل الـ HTML الجديد لصفحة المشاهدة
+                            if (totalHeight >= scrollHeight || totalHeight >= 1200) {
+                                clearInterval(timer);
+                                resolve();
+                            }
+                        }, 100);
+                    });
+                });
+
+                // 2. الانتظار الذكي لظهور حاوية السيرفرات في الـ HTML (بحد أقصى 10 ثوانٍ)
+                try {
+                    await page.waitForSelector('.servers__list ul li', { timeout: 10000 });
+                } catch (selectorTimeout) {
+                    console.log('⏳ تم تجاوز المهلة السريعة، ننتظر ثوانٍ إضافية للتحميل الديناميكي...');
+                }
+
+                // مهلة ثبات نهائية قبل الكشط لضمان استقرار الخصائص (Data Attributes)
+                await page.waitForTimeout(3000); 
+
+                // كشط السيرفرات بناءً على هيكل الـ HTML المطلوب
                 const servers = await page.evaluate(() => {
                     const serverItems = document.querySelectorAll('.servers__list ul li');
                     const extractedServers = [];
@@ -155,11 +175,16 @@ async function scrapeMovies() {
                 if (servers.length > 0) {
                     console.log(`✅ تم استخراج ${servers.length} سيرفر بنجاح لهذا الفيلم.`);
                 } else {
-                    console.log('⚠️ لم يتم العثور على سيرفرات داخل الـ HTML، قد تحتاج الصفحة لوقت أطول أو السيرفرات محمية.');
+                    console.log('⚠️ لم يتم العثور على سيرفرات. قد تكون الصفحة فارغة أو الحماية نشطة.');
+                    // أخذ لقطة شاشة للفيلم الأول المتعثر فقط لتشخيص المشكلة دون ملء مساحة الجلبريك
+                    if (i === 0) {
+                        await page.screenshot({ path: `no-servers-debug-film1.png`, fullPage: true });
+                        console.log('📸 تم حفظ لقطة شاشة تشخيصية: no-servers-debug-film1.png');
+                    }
                 }
 
-                // انتظار عشوائي صغير بين كل فيلم وفيلم لتجنب كشف العمليات المتتالية (Anti-Scraping Rate Limit)
-                const randomDelay = Math.floor(Math.random() * 2000) + 1500; 
+                // انتظار عشوائي ذكي بين الأفلام لتفادي الـ Rate Limit والحظر
+                const randomDelay = Math.floor(Math.random() * 2500) + 2000; 
                 await page.waitForTimeout(randomDelay);
 
             } catch (movieError) {
@@ -167,7 +192,7 @@ async function scrapeMovies() {
             }
         }
 
-        // حفظ البيانات النهائية لجميع الأفلام مع سيرفراتها
+        // حفظ البيانات النهائية لجميع الأفلام
         const outputData = {
             metadata: {
                 scraped_at: new Date().toISOString(),
