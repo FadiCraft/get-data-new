@@ -1,4 +1,3 @@
-// استخدام playwright-extra لتشغيل وضع التخفي (Stealth)
 const { chromium } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 chromium.use(stealth);
@@ -6,15 +5,37 @@ chromium.use(stealth);
 const fs = require('fs');
 const path = require('path');
 
+// دالة ذكية لفك تشفير روابط الـ Base64 المستخرجة من السيرفرات
+function decodeServerLink(rawLink) {
+    try {
+        let base64String = '';
+        
+        if (rawLink.includes('url=')) {
+            base64String = rawLink.split('url=')[1];
+        } else if (rawLink.includes('id=')) {
+            base64String = rawLink.split('id=')[1];
+        } else {
+            // إذا لم يحتوي على معايير، نمرره كما هو
+            return rawLink;
+        }
+
+        // فك تشفير النص من Base64 إلى نص عادي (رابط الـ iframe الحقيقي)
+        const decodedUrl = Buffer.from(base64String, 'base64').toString('utf-8');
+        return decodedUrl;
+    } catch (e) {
+        // في حال حدوث خطأ غير متوقع أثناء فك التشفير، نرجع الرابط الأصلي
+        return rawLink;
+    }
+}
+
 async function scrapeMovies() {
     console.log('🚀 جاري تشغيل المتصفح بوضع التخفي المتقدم...');
     const browser = await chromium.launch({
-        headless: true, // اتركها true لـ GitHub Actions
+        headless: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-blink-features=AutomationControlled',
-            '--use-fake-ui-for-media-stream',
             '--window-size=1920,1080'
         ]
     });
@@ -35,14 +56,11 @@ async function scrapeMovies() {
             timeout: 60000
         });
 
-        // مهلة عشوائية لتبدو حركة طبيعية وتجاوز الجدار الأول
-        await page.waitForTimeout(7000);
-
-        // التمرير قليلاً لأسفل للتأكيد للموقع أننا لسنا بوتاً بليداً
+        await page.waitForTimeout(6000);
         await page.evaluate(() => window.scrollBy(0, 400));
         await page.waitForTimeout(2000);
 
-        // استخراج الأفلام المتواجدة
+        // استخراج الأفلام المتواجدة بالرئيسية
         const movies = await page.evaluate(() => {
             const movieElements = document.querySelectorAll('li .item__contents');
             const moviesData = [];
@@ -61,40 +79,29 @@ async function scrapeMovies() {
 
         if (movies.length === 0) {
             console.log('⚠️ فشل استخراج الأفلام من الرئيسية بسبب جدار الحماية.');
-            await page.screenshot({ path: 'cloudflare-blocked-main.png', fullPage: true });
             return;
         }
 
         const movie = movies[0];
         console.log(`\n🎯 الفيلم المستهدف: ${movie.title}`);
-        console.log(`🔗 رابط الفيلم الأصلي: ${movie.movie_url}`);
-
-        // صياغة رابط الـ watch
+        
         let watchUrl = movie.movie_url.endsWith('/') ? movie.movie_url + 'watch/' : movie.movie_url + '/watch/';
         movie.watch_url = watchUrl;
         movie.servers = [];
 
-        // الحيلة الكبرى: ننتقل أولاً لرابط الفيلم الأصلي لنرث الـ Cookies الموثوقة
         console.log('🔄 جاري التوجه لصفحة الفيلم الرئيسية أولاً لبناء جلسة موثوقة...');
         await page.goto(movie.movie_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(4000);
-        await page.evaluate(() => window.scrollBy(0, 300));
 
-        // الآن ننتقل إلى رابط الـ watch بعد أن وثق الموقع بالمتصفح الخاص بنا
         console.log('🎬 جاري الانتقال الآمن لصفحة المشاهدة وسيرفرات العرض...');
         await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
-        // محاكاة حركة بشرية داخل صفحة السيرفرات
         await page.evaluate(() => window.scrollBy(0, 500));
-        console.log('⏳ انتظار 7 ثوانٍ لفك شيفرة حاوية السيرفرات...');
+        console.log('⏳ انتظار لفك شيفرة حاوية السيرفرات...');
         await page.waitForTimeout(7000);
 
-        // التقاط لقطة شاشة للتأكد من تخطي الكابتشا بنجاح ورؤية الصفحة
-        await page.screenshot({ path: 'watch-page-inside-result.png', fullPage: true });
-        console.log('📸 تم التقاط صورة للنتيجة الحالية باسم: watch-page-inside-result.png');
-
-        // كشط السيرفرات
-        const htmlServers = await page.evaluate(() => {
+        // كشط السيرفرات الخام من الـ HTML
+        const rawServers = await page.evaluate(() => {
             const serverItems = document.querySelectorAll('.servers__list ul li');
             const extracted = [];
             serverItems.forEach((li) => {
@@ -103,7 +110,7 @@ async function scrapeMovies() {
                 if (link) {
                     extracted.push({
                         name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
-                        link: link.trim(),
+                        raw_link: link.trim(),
                         quality: li.getAttribute('data-qu') || 'unknown'
                     });
                 }
@@ -111,20 +118,32 @@ async function scrapeMovies() {
             return extracted;
         });
 
-        movie.servers = htmlServers;
-
-        if (htmlServers.length > 0) {
-            console.log(`✅ انتصار! تم تجاوز الحماية واستخراج ${htmlServers.length} سيرفر للفيلم الأول!`);
-            console.log(htmlServers);
-        } else {
-            console.log('⚠️ الصفحة فُتحت ولكن لم نجد عناصر السيرفرات بعد في الـ DOM، تفحص الصورة المرفوعة.');
+        // معالجة السيرفرات وفك التشفير فوراً في الخلفية دون الحاجة لفتح الروابط المحجوبة
+        const processedServers = [];
+        for (const srv of rawServers) {
+            const cleanIframeUrl = decodeServerLink(srv.raw_link);
+            processedServers.push({
+                name: srv.name,
+                quality: srv.quality,
+                iframe_url: cleanIframeUrl // هنا الرابط الحقيقي الصافي والمباشر للمشاهدة!
+            });
         }
 
+        movie.servers = processedServers;
+
+        if (processedServers.length > 0) {
+            console.log(`\n🎉 انتصار ساحق! تم استخراج وفك تشفير ${processedServers.length} سيرفر بنجاح:`);
+            console.log(JSON.stringify(processedServers, null, 2));
+        } else {
+            console.log('⚠️ لم يتم العثور على سيرفرات داخل الصفحة.');
+        }
+
+        // حفظ النتيجة النهائية النظيفة
         fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
+        console.log(`\n📁 تم حفظ البيانات النظيفة مع روابط الـ Iframe المفكوكة في: single_movie_result.json`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
-        await page.screenshot({ path: 'fatal-error-debug.png', fullPage: true });
     } finally {
         await browser.close();
     }
