@@ -36,12 +36,13 @@ async function scrapeMovies() {
         console.log('🔄 جاري تحميل الصفحة الرئيسية للأفلام...');
         await simulateHumanBehavior(page);
         
+        // استخدام domcontentloaded لتجنب التعليق بسبب الإعلانات بالرئيسية
         await page.goto('https://m.asd.ink/category/arabic-movies-14/', {
-            waitUntil: 'networkidle',
-            timeout: 60000,
+            waitUntil: 'domcontentloaded',
+            timeout: 40000,
         });
 
-        console.log('⏳ في انتظار استقرار الصفحة الرئيسية...');
+        console.log('⏳ في انتظار ثبات الصفحة الرئيسية...');
         await page.waitForTimeout(5000);
 
         // استخراج الأفلام
@@ -65,88 +66,75 @@ async function scrapeMovies() {
         });
 
         if (movies.length === 0) {
-            console.log('⚠️ لم يتم العثور على أفلام بالرئيسية.');
+            console.log('⚠️ لم يتم العثور على أفلام بالرئيسية، سنلتقط صورة للتحقق.');
+            await page.screenshot({ path: 'main-page-empty.png', fullPage: true });
             return;
         }
 
-        // تخصيص العمل على الفيلم الأول فقط اختصاراً للوقت
         const movie = movies[0];
         console.log(`\n🧪 [وضع الفحص الأحادي] - الفيلم المستهدف: ${movie.title}`);
         console.log(`🔗 رابط المشاهدة: ${movie.watch_url}`);
 
-        // مصفوفة لتخزين أي روابط مشبوهة أو استجابات تحتوي على كلمات مفتاحية (مثل play, server, watch, posts)
-        let networkInterceptedServers = [];
-
-        // تفعيل مراقبة الشبكة لالتقاط الـ API Requests الخلفية
+        // تفعيل مراقبة الشبكة لرصد الروابط ديناميكياً
         page.on('response', async (response) => {
             const url = response.url();
-            const method = response.request().method();
-            
-            // فلترة الطلبات التي تطلب ملفات الميديا أو السيرفرات أو أياكس
-            if (url.includes('admin-ajax.php') || url.includes('play') || url.includes('server') || url.includes('wp-json')) {
-                console.log(`📡 [Network Request] ${method} -> ${url}`);
-                try {
-                    // إذا كانت الاستجابة نصية أو JSON، نقوم بطباعتها أو فحصها
-                    const contentType = response.headers()['content-type'] || '';
-                    if (contentType.includes('json') || contentType.includes('text') || contentType.includes('javascript')) {
-                        const text = await response.text();
-                        // إذا كانت الاستجابة تحتوي على الروابط التي نبحث عنها
-                        if (text.includes('data-link') || text.includes('iframe') || text.includes('embed') || text.includes('play.php')) {
-                            console.log(`🎯 عثرنا على استجابة شبكة تحتوي على روابط السيرفرات!`);
-                            // حفظ الاستجابة لتحليلها لاحقاً إذا لزم الأمر
-                            fs.writeFileSync('network_response_debug.txt', text);
-                        }
-                    }
-                } catch (e) {
-                    // تجنب الأخطاء في حال كانت الاستجابة غير قابلة للقراءة
-                }
+            if (url.includes('admin-ajax.php') || url.includes('play') || url.includes('server')) {
+                console.log(`📡 [Network Request] -> ${url}`);
             }
         });
 
-        // الذهاب لصفحة المشاهدة
-        await page.goto(movie.watch_url, { waitUntil: 'networkidle', timeout: 60000 });
-        
-        // التمرير الهادئ لأسفل لتحفيز الأكواد
-        await page.evaluate(() => window.scrollBy(0, 500));
-        
-        console.log('⏳ ننتظر 8 ثوانٍ للسماح للشبكة بإنهاء كل الطلبات الخلفية...');
-        await page.waitForTimeout(8000);
+        try {
+            console.log('🚀 جاري الانتقال لصفحة المشاهدة...');
+            // تم تغييرها لـ domcontentloaded وتخفيض الـ timeout لتفادي التعليق اللانهائي للإعلانات
+            await page.goto(movie.watch_url, { waitUntil: 'domcontentloaded', timeout: 35000 });
+            
+            // محاكاة سكرول لتحفيز السكربتات
+            await page.evaluate(() => window.scrollBy(0, 500));
+            
+            console.log('⏳ ننتظر 8 ثوانٍ هادئة لتكتمل طلبات السيرفرات الخلفية...');
+            await page.waitForTimeout(8000);
 
-        // محاولة كشط الـ DOM التقليدي مجدداً بعد انتظار الشبكة
-        const htmlServers = await page.evaluate(() => {
-            const serverItems = document.querySelectorAll('.servers__list ul li');
-            const extracted = [];
-            serverItems.forEach((li) => {
-                const nameElement = li.querySelector('span');
-                const link = li.getAttribute('data-link');
-                if (link) {
-                    extracted.push({
-                        name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
-                        link: link.trim(),
-                        quality: li.getAttribute('data-qu') || 'unknown'
-                    });
-                }
+            // محاولة الكشط من الـ DOM
+            const htmlServers = await page.evaluate(() => {
+                const serverItems = document.querySelectorAll('.servers__list ul li');
+                const extracted = [];
+                serverItems.forEach((li) => {
+                    const nameElement = li.querySelector('span');
+                    const link = li.getAttribute('data-link');
+                    if (link) {
+                        extracted.push({
+                            name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
+                            link: link.trim(),
+                            quality: li.getAttribute('data-qu') || 'unknown'
+                        });
+                    }
+                });
+                return extracted;
             });
-            return extracted;
-        });
 
-        movie.servers = htmlServers;
+            movie.servers = htmlServers;
 
-        if (htmlServers.length > 0) {
-            console.log(`✅ نجح الكشط من الـ HTML مباشرة! تم العثور على ${htmlServers.length} سيرفر.`);
-            console.log(htmlServers);
-        } else {
-            console.log('⚠️ الـ HTML لا يزال فارغاً. يرجى مراجعة سجلات الـ [Network Request] المطبوعة بالأعلى لرؤية الرابط الخلفي.');
-            await page.screenshot({ path: 'single-movie-network-debug.png', fullPage: true });
-            console.log('📸 تم حفظ لقطة شاشة للتحقق: single-movie-network-debug.png');
+            if (htmlServers.length > 0) {
+                console.log(`✅ نجح الكشط! تم العثور على ${htmlServers.length} سيرفر.`);
+                console.log(htmlServers);
+            } else {
+                console.log('⚠️ لم نجد سيرفرات في الـ HTML. سنلتقط صورة للصفحة الآن.');
+                await page.screenshot({ path: 'watch-page-no-servers.png', fullPage: true });
+                console.log('📸 تم حفظ الصورة باسم: watch-page-no-servers.png');
+            }
+
+        } catch (movieError) {
+            console.error('❌ حدث خطأ أثناء معالجة صفحة المشاهدة:', movieError.message);
+            // التقاط صورة فورية لمتصفح عند حدوث الـ Timeout أو أي خطأ آخر
+            await page.screenshot({ path: 'timeout-error-page.png', fullPage: true });
+            console.log('📸 تم التقاط صورة للخطأ وحفظها باسم: timeout-error-page.png');
         }
 
-        // حفظ ملف التجربة
+        // حفظ ملف التجربة في كل الأحوال لتعاين البيانات
         fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
-        console.log(`📁 تم حفظ النتيجة في: single_movie_result.json`);
 
     } catch (error) {
-        console.error('❌ حدث خطأ:', error);
+        console.error('❌ حدث خطأ عام بالسكريبت:', error);
     } finally {
         await browser.close();
     }
