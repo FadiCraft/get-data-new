@@ -1,0 +1,16 @@
+{
+  "name": "get-data-new",
+  "version": "1.0.0",
+  "description": "",
+  "main": "scrape-movies.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@playwright/test": "^1.60.0",
+    "playwright": "^1.60.0"
+  }
+}
