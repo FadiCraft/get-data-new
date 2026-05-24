@@ -102,9 +102,7 @@ async function scrapeMovies() {
         console.log('⏳ انتظار استقرار عناصر الصفحة والـ HTML...');
         await page.waitForTimeout(6000);
 
-        // --- ميكانيكية التنقل بين الجودات واستخراج السيرفرات ---
-        
-        // 1. استخراج الجودات المتاحة في الصفحة (الـ Selectors الخاصة بـ li)
+        // 1. استخراج الجودات المتاحة في الصفحة
         const qualitySelectors = await page.evaluate(() => {
             const listItems = document.querySelectorAll('.quality__swither ul.qualities__list li');
             const qualities = [];
@@ -112,8 +110,8 @@ async function scrapeMovies() {
                 const qValue = li.getAttribute('data-quality') || li.querySelector('.qu')?.textContent.trim();
                 if (qValue) {
                     qualities.push({
-                        index: index, // سنستخدم المؤشر للضغط بدقة
-                        quality_name: qValue + 'p'
+                        index: index,
+                        quality_name: qValue.includes('p') ? qValue : qValue + 'p'
                     });
                 }
             });
@@ -124,42 +122,45 @@ async function scrapeMovies() {
 
         let allExtractedServers = [];
 
-        // إذا لم يجد مصفف جودات (تحوطاً)، نأخذ السيرفرات الظاهرة مباشرة
         if (qualitySelectors.length === 0) {
-            console.log('ℹ️ لم يتم العثور على أداة تبديل الجودات، سيتم كشط الجودة الافتراضية المتاحة فقط.');
+            console.log('ℹ️ لم يتم العثور على أداة تبديل الجودات، سيتم كشط الجودة الافتراضية.');
             allExtractedServers = await extractCurrentVisibleServers(page, 'الافتراضية');
         } else {
-            // 2. المرور على كل جودة، الضغط عليها، ثم كشط سيرفراتها
+            // 2. معالجة كل جودة كأنه فيلم مستقل تماماً لمنع حدوث التداخل أو القراءة الفارغة
             for (const q of qualitySelectors) {
-                console.log(`🔄 جاري التبديل إلى الجودة: [${q.quality_name}]...`);
+                console.log(`\n🔄 جاري الانتقال وتفعيل جودة: [${q.quality_name}]...`);
                 
                 try {
-                    // الضغط على عنصر الجودة بناءً على ترتيبه في الصفحة
+                    // الضغط لتغيير الجودة
                     await page.evaluate((idx) => {
                         const items = document.querySelectorAll('.quality__swither ul.qualities__list li');
-                        if (items[idx]) items[idx].click();
+                        if (items[idx]) {
+                            items[idx].click();
+                        }
                     }, q.index);
                     
-                    // انتظار قصير جداً لتحديث السيرفرات في الـ DOM بعد الضغط
-                    await page.waitForTimeout(1500);
+                    // التغيير الجوهري هنا: إعطاء وقت كافٍ (2.5 ثانية) للموقع لإنهاء عملية الـ AJAX وإعادة بناء الـ DOM للسيرفرات الجديدة
+                    await page.waitForTimeout(2500);
 
-                    // كشط السيرفرات الحالية المتأثرة بالضغطة
+                    // استخراج سيرفرات الجودة الحالية النشطة
                     const serversForThisQuality = await extractCurrentVisibleServers(page, q.quality_name);
+                    console.log(`⚡ تم العثور على ${serversForThisQuality.length} سيرفر لهذه الجودة.`);
+                    
                     allExtractedServers = allExtractedServers.concat(serversForThisQuality);
 
                 } catch (clickError) {
-                    console.error(`❌ تعذر الضغط على الجودة ${q.quality_name}:`, clickError.message);
+                    console.error(`❌ خطأ أثناء معالجة الجودة ${q.quality_name}:`, clickError.message);
                 }
             }
         }
 
-        // 3. التصفية النهائية: استبعاد سيرفر عرب سيد والترتيب حسب الأولوية
+        // 3. التصفية النهائية: استبعاد سيرفر عرب سيد
         let filteredServers = allExtractedServers.filter(srv => !srv.name.includes('عرب سيد'));
 
         // الترتيب بحسب دالة الأولوية (Priority)
         filteredServers.sort((a, b) => a.priority - b.priority);
 
-        // 4. إعادة صياغة الأسماء والترقيم النهائي مع الحفاظ على حقل الجودة المستخرجة لكل سيرفر
+        // 4. إعادة ترقيم السيرفرات تصاعدياً مع الحفاظ على حقل الجودة المستقلة لكل منها
         const finalSortedServers = filteredServers.map((srv, index) => {
             return {
                 name: `سيرفر ${index + 1}`,
@@ -171,14 +172,15 @@ async function scrapeMovies() {
         movie.servers = finalSortedServers;
 
         if (finalSortedServers.length > 0) {
-            console.log(`\n🎉 انتصار كامل! تم تجميع وترتيب ${finalSortedServers.length} سيرفر لكافة الجودات معاً:`);
+            console.log(`\n🎉 انتصار كامل! إجمالي السيرفرات المستخرجة والمفرزة لكل الجودات: ${finalSortedServers.length}`);
             console.log(JSON.stringify(finalSortedServers, null, 2));
         } else {
-            console.log('⚠️ لم يتم العثور على سيرفرات صالحة بعد دمج الجودات.');
+            console.log('⚠️ لم يتم العثور على أي سيرفرات صالحة بعد استقصاء جميع الجودات.');
+            await page.screenshot({ path: 'final-empty-servers-debug.png', fullPage: true });
         }
 
         fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
-        console.log(`\n📁 تم حفظ البيانات لجميع الجودات بنجاح في: single_movie_result.json`);
+        console.log(`\n📁 تم تحديث النتيجة النهائية بنجاح وحفظها في: single_movie_result.json`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
@@ -187,20 +189,19 @@ async function scrapeMovies() {
     }
 }
 
-// دالة مساعدة لكشط السيرفرات المرئية حالياً في الصفحة
+// دالة مساعدة معزولة تماماً لكشط السيرفرات الحالية من الـ DOM
 async function extractCurrentVisibleServers(page, currentQualityName) {
     return await page.evaluate((qualityLabel) => {
         const serverItems = document.querySelectorAll('.servers__list ul li');
         const extracted = [];
         
-        // دالة داخلية لفك الـ Base64 داخل سياق المتصفح (btoa / atob)
         function decodeInsideBrowser(rawLink) {
             try {
                 let base64String = '';
                 if (rawLink.includes('url=')) base64String = rawLink.split('url=')[1];
                 else if (rawLink.includes('id=')) base64String = rawLink.split('id=')[1];
                 else return rawLink;
-                return atob(base64String); // fف التشفير في المتصفح باستخدام atob
+                return atob(base64String); 
             } catch (e) {
                 return rawLink;
             }
@@ -217,13 +218,13 @@ async function extractCurrentVisibleServers(page, currentQualityName) {
         serverItems.forEach((li) => {
             const nameElement = li.querySelector('span');
             const link = li.getAttribute('data-link');
-            const dataQu = li.getAttribute('data-qu'); // قراءة جودة السيرفر نفسه إن وجدت
+            const dataQu = li.getAttribute('data-qu'); 
             
             if (link) {
                 const cleanIframeUrl = decodeInsideBrowser(link.trim());
                 extracted.push({
                     name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
-                    quality: dataQu ? dataQu + 'p' : qualityLabel, // إذا لم تكن موجودة، نعتمد جودة التبويب الحالي
+                    quality: dataQu ? dataQu + 'p' : qualityLabel, 
                     iframe_url: cleanIframeUrl,
                     priority: getPriorityInsideBrowser(cleanIframeUrl)
                 });
