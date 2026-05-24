@@ -32,7 +32,7 @@ function getServerPriority(url) {
 }
 
 async function scrapeMovies() {
-    console.log('🚀 jari تشغيل المتصفح بوضع التخفي المتقدم...');
+    console.log('🚀 جاري تشغيل المتصفح بوضع التخفي المتقدم...');
     const browser = await chromium.launch({
         headless: true,
         args: [
@@ -53,7 +53,7 @@ async function scrapeMovies() {
     const page = await context.newPage();
 
     try {
-        console.log('🔄 jari فتح الصفحة الرئيسية...');
+        console.log('🔄 جاري فتح الصفحة الرئيسية...');
         await page.goto('https://m.asd.ink/category/arabic-movies-14/', {
             waitUntil: 'domcontentloaded',
             timeout: 60000
@@ -89,20 +89,24 @@ async function scrapeMovies() {
         
         let watchUrl = movie.movie_url.endsWith('/') ? movie.movie_url + 'watch/' : movie.movie_url + '/watch/';
         movie.watch_url = watchUrl;
-        movie.servers = [];
 
-        console.log('🔄 jari التوجه لصفحة الفيلم الرئيسية لبناء جلسة موثوقة...');
+        console.log('🔄 جاري التوجه لصفحة الفيلم الرئيسية لبناء جلسة موثوقة...');
         await page.goto(movie.movie_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(4000);
 
-        console.log('🎬 jari الانتقال لصفحة المشاهدة وسيرفرات العرض...');
+        console.log('🎬 جاري الانتقال لصفحة المشاهدة وسيرفرات العرض...');
         await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         await page.evaluate(() => window.scrollBy(0, 500));
-        console.log('⏳ انتظار استقرار عناصر الصفحة والـ HTML...');
+        console.log('⏳ انتظار استقرار عناصر الصفحة والـ HTML الأصلية...');
         await page.waitForTimeout(6000);
 
-        // 1. استخراج الجودات المتاحة من الهيكل مباشرة
+        // خطوة أمان ذكية: كشط السيرفرات الظاهرة حالياً فوراً قبل اللعب بأزرار الجودات
+        console.log('📥 كشط السيرفرات النشطة افتراضياً في الصفحة أولاً...');
+        let allExtractedServers = await extractCurrentVisibleServers(page, 'افتراضية');
+        console.log(`⚡ تم كشط ${allExtractedServers.length} سيرفر من الوضع الافتراضي.`);
+
+        // 1. استخراج الجودات المتاحة
         const qualitySelectors = await page.evaluate(() => {
             const listItems = document.querySelectorAll('.quality__swither ul.qualities__list li');
             const qualities = [];
@@ -118,57 +122,53 @@ async function scrapeMovies() {
             return qualities;
         });
 
-        console.log(`📊 الجودات المكتشفة في القائمة المنسدلة:`, qualitySelectors.map(q => q.quality_name));
+        console.log(`\n📊 الجودات المكتشفة في القائمة المنسدلة:`, qualitySelectors.map(q => q.quality_name));
 
-        let allExtractedServers = [];
+        // 2. التنقل الهادئ بين الجودات الأخرى
+        for (const q of qualitySelectors) {
+            console.log(`🔄 جاري تبديل الجودة إلى: [${q.quality_name}]...`);
+            
+            try {
+                // فتح القائمة المنسدلة أولاً بشكل صريح
+                await page.click('.quality__swither .title', { timeout: 5000 });
+                await page.waitForTimeout(1000); // إعطاء القائمة فرصة للظهور بصرياً
 
-        if (qualitySelectors.length === 0) {
-            console.log('ℹ️ لم يتم العثور على أداة التبديل، سيتم كشط الجودة الافتراضية.');
-            allExtractedServers = await extractCurrentVisibleServers(page, 'الافتراضية');
-        } else {
-            // 2. معالجة كل جودة بفتح القائمة المنسدلة أولاً ثم النقر المباشر والقسري
-            for (const q of qualitySelectors) {
-                console.log(`\n🔄 جاري محاولة اختيار جودة: [${q.quality_name}]...`);
+                // الضغط على الخيار المحدد قسرياً باستخدام محاكي النقر لـ Playwright لضمان تنفيذ حدث المتصفح بالكامل
+                const liSelector = `.quality__swither ul.qualities__list li:nth-child(${q.index + 1})`;
+                await page.click(liSelector, { force: true });
                 
-                try {
-                    // أولاً: محاكاة الضغط على الزر الرئيسي لفتح القائمة المنسدلة (Dropdown) وضمان ظهور الخيارات
-                    await page.evaluate(() => {
-                        const switcherBtn = document.querySelector('.quality__swither .title');
-                        if (switcherBtn) switcherBtn.click();
-                    });
-                    await page.waitForTimeout(500); // وقت قصير جداً لتأثير الأنيميشن الخاص بالقائمة
+                // انتظار تصفية الـ AJAX من الموقع لتغيير محتوى السيرفرات
+                await page.waitForTimeout(3500);
 
-                    // ثانياً: الضغط القسري (Force Dispatch) على عنصر الجودة ليتخطى أي حجب بصري من القائمة
-                    await page.evaluate((idx) => {
-                        const items = document.querySelectorAll('.quality__swither ul.qualities__list li');
-                        if (items[idx]) {
-                            // استخدام dispatchEvent لضمان النقر حتى لو كان العنصر مغطى أو شبه مخفي
-                            items[idx].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                        }
-                    }, q.index);
-                    
-                    // إعطاء وقت كافٍ (3 ثوانٍ) للموقع لمسح وحقن السيرفرات الجديدة الخاصة بالجودة عبر الـ AJAX
-                    await page.waitForTimeout(3000);
+                // كشط سيرفرات الجودة الحالية
+                const serversForThisQuality = await extractCurrentVisibleServers(page, q.quality_name);
+                console.log(`⚡ تم كشط ${serversForThisQuality.length} سيرفر متوافق مع جودة [${q.quality_name}].`);
+                
+                allExtractedServers = allExtractedServers.concat(serversForThisQuality);
 
-                    // استخراج سيرفرات الجودة الحالية النشطة بعد التحويل الناجح
-                    const serversForThisQuality = await extractCurrentVisibleServers(page, q.quality_name);
-                    console.log(`⚡ تم كشط ${serversForThisQuality.length} سيرفر متوافق مع جودة [${q.quality_name}].`);
-                    
-                    allExtractedServers = allExtractedServers.concat(serversForThisQuality);
-
-                } catch (clickError) {
-                    console.error(`❌ خطأ أثناء النقر وتبديل الجودة ${q.quality_name}:`, clickError.message);
-                }
+            } catch (clickError) {
+                console.error(`❌ خطأ تكتيكي أثناء التحويل لجودة ${q.quality_name}:`, clickError.message);
             }
         }
 
-        // 3. التصفية النهائية: استبعاد سيرفر عرب سيد
-        let filteredServers = allExtractedServers.filter(srv => !srv.name.includes('عرب سيد'));
+        // 3. التصفية والتنظيف النهائي وإزالة التكرار (منع تكرار نفس رابط الـ iframe)
+        let uniqueServersMap = new Map();
+        
+        for (const srv of allExtractedServers) {
+            if (srv.name.includes('عرب سيد')) continue; // استبعاد عرب سيد
+            
+            // نستخدم رابط الـ iframe كمعرّف فريد لمنع تكرار السيرفرات المتطابقة عبر الجودات
+            if (!uniqueServersMap.has(srv.iframe_url)) {
+                uniqueServersMap.set(srv.iframe_url, srv);
+            }
+        }
+
+        let filteredServers = Array.from(uniqueServersMap.values());
 
         // الترتيب بحسب دالة الأولوية (Priority)
         filteredServers.sort((a, b) => a.priority - b.priority);
 
-        // 4. بناء الهيكل النهائي المرقم والمميز بالجودات
+        // 4. بناء المصفوفة النهائية المرقمة لتقديمها لتطبيقك
         const finalSortedServers = filteredServers.map((srv, index) => {
             return {
                 name: `سيرفر ${index + 1}`,
@@ -180,15 +180,15 @@ async function scrapeMovies() {
         movie.servers = finalSortedServers;
 
         if (finalSortedServers.length > 0) {
-            console.log(`\n🎉 انتصار! إجمالي السيرفرات لجميع الجودات مجتمعة ومفرزة: ${finalSortedServers.length}`);
+            console.log(`\n🎉 انتصار حقيقي ومكتمل! إجمالي السيرفرات المستخرجة والمفرزة بنجاح: ${finalSortedServers.length}`);
             console.log(JSON.stringify(finalSortedServers, null, 2));
         } else {
-            console.log('⚠️ لم يتم العثور على أي سيرفرات صالحة، جاري حفظ صورة للتشخيص.');
-            await page.screenshot({ path: 'dropdown-click-failed-debug.png', fullPage: true });
+            console.log('⚠️ فشل المتصفح تماماً في العثور على أي سيرفرات.');
+            await page.screenshot({ path: 'dropdown-critical-debug.png', fullPage: true });
         }
 
         fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
-        console.log(`\n📁 تم حفظ ملف البيانات المحدث بالكامل في: single_movie_result.json`);
+        console.log(`\n📁 تم حفظ البيانات النهائية النظيفة في: single_movie_result.json`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
@@ -197,8 +197,8 @@ async function scrapeMovies() {
     }
 }
 
-async function extractCurrentVisibleServers(page, currentQualityName) {
-    return await page.evaluate((qualityLabel) => {
+async function extractCurrentVisibleServers(page, qualityLabel) {
+    return await page.evaluate((label) => {
         const serverItems = document.querySelectorAll('.servers__list ul li');
         const extracted = [];
         
@@ -231,14 +231,14 @@ async function extractCurrentVisibleServers(page, currentQualityName) {
                 const cleanIframeUrl = decodeInsideBrowser(link.trim());
                 extracted.push({
                     name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
-                    quality: dataQu ? dataQu + 'p' : qualityLabel, 
+                    quality: dataQu ? dataQu + 'p' : label, 
                     iframe_url: cleanIframeUrl,
                     priority: getPriorityInsideBrowser(cleanIframeUrl)
                 });
             }
         });
         return extracted;
-    }, currentQualityName);
+    }, qualityLabel);
 }
 
 scrapeMovies().catch(console.error);
