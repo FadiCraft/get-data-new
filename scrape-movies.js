@@ -5,27 +5,30 @@ chromium.use(stealth);
 const fs = require('fs');
 const path = require('path');
 
-// دالة ذكية لفك تشفير روابط الـ Base64 المستخرجة من السيرفرات
+// دالة فك تشفير روابط الـ Base64
 function decodeServerLink(rawLink) {
     try {
         let base64String = '';
-        
         if (rawLink.includes('url=')) {
             base64String = rawLink.split('url=')[1];
         } else if (rawLink.includes('id=')) {
             base64String = rawLink.split('id=')[1];
         } else {
-            // إذا لم يحتوي على معايير، نمرره كما هو
             return rawLink;
         }
-
-        // فك تشفير النص من Base64 إلى نص عادي (رابط الـ iframe الحقيقي)
-        const decodedUrl = Buffer.from(base64String, 'base64').toString('utf-8');
-        return decodedUrl;
+        return Buffer.from(base64String, 'base64').toString('utf-8');
     } catch (e) {
-        // في حال حدوث خطأ غير متوقع أثناء فك التشفير، نرجع الرابط الأصلي
         return rawLink;
     }
+}
+
+// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على نطاق الـ iframe (كلما قل الوزن، زادت الأولوية)
+function getServerPriority(url) {
+    const lowerUrl = url.toLowerCase();
+    if (lowerUrl.includes('vidmoly')) return 1; // الأولوية الأولى
+    if (lowerUrl.includes('vidara')) return 2;  // الأولوية الثانية
+    if (lowerUrl.includes('voe')) return 3;     // الأولوية الثالثة
+    return 4;                                   // أي سيرفر آخر يدعم m3u8 ديناميكي
 }
 
 async function scrapeMovies() {
@@ -60,7 +63,6 @@ async function scrapeMovies() {
         await page.evaluate(() => window.scrollBy(0, 400));
         await page.waitForTimeout(2000);
 
-        // استخراج الأفلام المتواجدة بالرئيسية
         const movies = await page.evaluate(() => {
             const movieElements = document.querySelectorAll('li .item__contents');
             const moviesData = [];
@@ -118,29 +120,47 @@ async function scrapeMovies() {
             return extracted;
         });
 
-        // معالجة السيرفرات وفك التشفير فوراً في الخلفية دون الحاجة لفتح الروابط المحجوبة
-        const processedServers = [];
+        // تصفية، استبعاد، وفك التشفير
+        let processedServers = [];
         for (const srv of rawServers) {
+            // 1. استبعاد سيرفر عرب سيد تماماً بناءً على الاسم المكتوب
+            if (srv.name.includes('عرب سيد')) {
+                continue; 
+            }
+
             const cleanIframeUrl = decodeServerLink(srv.raw_link);
+            
             processedServers.push({
                 name: srv.name,
                 quality: srv.quality,
-                iframe_url: cleanIframeUrl // هنا الرابط الحقيقي الصافي والمباشر للمشاهدة!
+                iframe_url: cleanIframeUrl,
+                priority: getServerPriority(cleanIframeUrl) // تحديد رتبة الأولوية
             });
         }
+
+        // 2. إعادة ترتيب المصفوفة تصاعدياً بناءً على رتبة الأولوية (Priority)
+        processedServers.sort((a, b) => a.priority - b.priority);
+
+        // 3. إعادة تسمية السيرفرات بشكل مرقم ومنظم لتطبيقك (سيرفر 1، سيرفر 2...) بعد الترتيب الجديد
+        processedServers = processedServers.map((srv, index) => {
+            return {
+                name: `سيرفر ${index + 1}`, // تضمن أن يبدأ جهازك دائماً برقم 1 كأفضل خيار
+                quality: srv.quality,
+                iframe_url: srv.iframe_url
+            };
+        });
 
         movie.servers = processedServers;
 
         if (processedServers.length > 0) {
-            console.log(`\n🎉 انتصار ساحق! تم استخراج وفك تشفير ${processedServers.length} سيرفر بنجاح:`);
+            console.log(`\n📊 تم تصفية وترتيب السيرفرات حسب الأفضلية لتطبيقك:`);
             console.log(JSON.stringify(processedServers, null, 2));
         } else {
-            console.log('⚠️ لم يتم العثور على سيرفرات داخل الصفحة.');
+            console.log('⚠️ لم يتم العثور على سيرفرات صالحة بعد التصفية.');
         }
 
-        // حفظ النتيجة النهائية النظيفة
         fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
-        console.log(`\n📁 تم حفظ البيانات النظيفة مع روابط الـ Iframe المفكوكة في: single_movie_result.json`);
+        console.log(`\n📁 تم حفظ ملف البيانات المحدث والمصفى في: single_movie_result.json`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
