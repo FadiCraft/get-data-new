@@ -22,7 +22,7 @@ function decodeServerLink(rawLink) {
     }
 }
 
-// دالة تحديد أولوية السيرفر (كلما قل الرقم زادت الأولوية)
+// دالة تحديد أولوية السيرفر
 function getServerPriority(url) {
     const lowerUrl = url.toLowerCase();
     if (lowerUrl.includes('vidmoly')) return 1;
@@ -32,7 +32,7 @@ function getServerPriority(url) {
 }
 
 async function scrapeMovies() {
-    console.log('🚀 جاري تشغيل المتصفح بوضع التخفي المتقدم...');
+    console.log('🚀 jari تشغيل المتصفح بوضع التخفي المتقدم...');
     const browser = await chromium.launch({
         headless: true,
         args: [
@@ -53,7 +53,7 @@ async function scrapeMovies() {
     const page = await context.newPage();
 
     try {
-        console.log('🔄 جاري فتح الصفحة الرئيسية...');
+        console.log('🔄 jari فتح الصفحة الرئيسية...');
         await page.goto('https://m.asd.ink/category/arabic-movies-14/', {
             waitUntil: 'domcontentloaded',
             timeout: 60000
@@ -80,7 +80,7 @@ async function scrapeMovies() {
         });
 
         if (movies.length === 0) {
-            console.log('⚠️ فشل استخراج الأفلام من الرئيسية بسبب جدار الحماية.');
+            console.log('⚠️ فشل استخراج الأفلام من الرئيسية.');
             return;
         }
 
@@ -91,18 +91,18 @@ async function scrapeMovies() {
         movie.watch_url = watchUrl;
         movie.servers = [];
 
-        console.log('🔄 جاري التوجه لصفحة الفيلم الرئيسية أولاً لبناء جلسة موثوقة...');
+        console.log('🔄 jari التوجه لصفحة الفيلم الرئيسية لبناء جلسة موثوقة...');
         await page.goto(movie.movie_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(4000);
 
-        console.log('🎬 جاري الانتقال الآمن لصفحة المشاهدة وسيرفرات العرض...');
+        console.log('🎬 jari الانتقال لصفحة المشاهدة وسيرفرات العرض...');
         await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         await page.evaluate(() => window.scrollBy(0, 500));
         console.log('⏳ انتظار استقرار عناصر الصفحة والـ HTML...');
         await page.waitForTimeout(6000);
 
-        // 1. استخراج الجودات المتاحة في الصفحة
+        // 1. استخراج الجودات المتاحة من الهيكل مباشرة
         const qualitySelectors = await page.evaluate(() => {
             const listItems = document.querySelectorAll('.quality__swither ul.qualities__list li');
             const qualities = [];
@@ -118,38 +118,46 @@ async function scrapeMovies() {
             return qualities;
         });
 
-        console.log(`📊 الجودات المكتشفة في الصفحة:`, qualitySelectors.map(q => q.quality_name));
+        console.log(`📊 الجودات المكتشفة في القائمة المنسدلة:`, qualitySelectors.map(q => q.quality_name));
 
         let allExtractedServers = [];
 
         if (qualitySelectors.length === 0) {
-            console.log('ℹ️ لم يتم العثور على أداة تبديل الجودات، سيتم كشط الجودة الافتراضية.');
+            console.log('ℹ️ لم يتم العثور على أداة التبديل، سيتم كشط الجودة الافتراضية.');
             allExtractedServers = await extractCurrentVisibleServers(page, 'الافتراضية');
         } else {
-            // 2. معالجة كل جودة كأنه فيلم مستقل تماماً لمنع حدوث التداخل أو القراءة الفارغة
+            // 2. معالجة كل جودة بفتح القائمة المنسدلة أولاً ثم النقر المباشر والقسري
             for (const q of qualitySelectors) {
-                console.log(`\n🔄 جاري الانتقال وتفعيل جودة: [${q.quality_name}]...`);
+                console.log(`\n🔄 جاري محاولة اختيار جودة: [${q.quality_name}]...`);
                 
                 try {
-                    // الضغط لتغيير الجودة
+                    // أولاً: محاكاة الضغط على الزر الرئيسي لفتح القائمة المنسدلة (Dropdown) وضمان ظهور الخيارات
+                    await page.evaluate(() => {
+                        const switcherBtn = document.querySelector('.quality__swither .title');
+                        if (switcherBtn) switcherBtn.click();
+                    });
+                    await page.waitForTimeout(500); // وقت قصير جداً لتأثير الأنيميشن الخاص بالقائمة
+
+                    // ثانياً: الضغط القسري (Force Dispatch) على عنصر الجودة ليتخطى أي حجب بصري من القائمة
                     await page.evaluate((idx) => {
                         const items = document.querySelectorAll('.quality__swither ul.qualities__list li');
                         if (items[idx]) {
-                            items[idx].click();
+                            // استخدام dispatchEvent لضمان النقر حتى لو كان العنصر مغطى أو شبه مخفي
+                            items[idx].dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                         }
                     }, q.index);
                     
-                    // التغيير الجوهري هنا: إعطاء وقت كافٍ (2.5 ثانية) للموقع لإنهاء عملية الـ AJAX وإعادة بناء الـ DOM للسيرفرات الجديدة
-                    await page.waitForTimeout(2500);
+                    // إعطاء وقت كافٍ (3 ثوانٍ) للموقع لمسح وحقن السيرفرات الجديدة الخاصة بالجودة عبر الـ AJAX
+                    await page.waitForTimeout(3000);
 
-                    // استخراج سيرفرات الجودة الحالية النشطة
+                    // استخراج سيرفرات الجودة الحالية النشطة بعد التحويل الناجح
                     const serversForThisQuality = await extractCurrentVisibleServers(page, q.quality_name);
-                    console.log(`⚡ تم العثور على ${serversForThisQuality.length} سيرفر لهذه الجودة.`);
+                    console.log(`⚡ تم كشط ${serversForThisQuality.length} سيرفر متوافق مع جودة [${q.quality_name}].`);
                     
                     allExtractedServers = allExtractedServers.concat(serversForThisQuality);
 
                 } catch (clickError) {
-                    console.error(`❌ خطأ أثناء معالجة الجودة ${q.quality_name}:`, clickError.message);
+                    console.error(`❌ خطأ أثناء النقر وتبديل الجودة ${q.quality_name}:`, clickError.message);
                 }
             }
         }
@@ -160,7 +168,7 @@ async function scrapeMovies() {
         // الترتيب بحسب دالة الأولوية (Priority)
         filteredServers.sort((a, b) => a.priority - b.priority);
 
-        // 4. إعادة ترقيم السيرفرات تصاعدياً مع الحفاظ على حقل الجودة المستقلة لكل منها
+        // 4. بناء الهيكل النهائي المرقم والمميز بالجودات
         const finalSortedServers = filteredServers.map((srv, index) => {
             return {
                 name: `سيرفر ${index + 1}`,
@@ -172,15 +180,15 @@ async function scrapeMovies() {
         movie.servers = finalSortedServers;
 
         if (finalSortedServers.length > 0) {
-            console.log(`\n🎉 انتصار كامل! إجمالي السيرفرات المستخرجة والمفرزة لكل الجودات: ${finalSortedServers.length}`);
+            console.log(`\n🎉 انتصار! إجمالي السيرفرات لجميع الجودات مجتمعة ومفرزة: ${finalSortedServers.length}`);
             console.log(JSON.stringify(finalSortedServers, null, 2));
         } else {
-            console.log('⚠️ لم يتم العثور على أي سيرفرات صالحة بعد استقصاء جميع الجودات.');
-            await page.screenshot({ path: 'final-empty-servers-debug.png', fullPage: true });
+            console.log('⚠️ لم يتم العثور على أي سيرفرات صالحة، جاري حفظ صورة للتشخيص.');
+            await page.screenshot({ path: 'dropdown-click-failed-debug.png', fullPage: true });
         }
 
         fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
-        console.log(`\n📁 تم تحديث النتيجة النهائية بنجاح وحفظها في: single_movie_result.json`);
+        console.log(`\n📁 تم حفظ ملف البيانات المحدث بالكامل في: single_movie_result.json`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
@@ -189,7 +197,6 @@ async function scrapeMovies() {
     }
 }
 
-// دالة مساعدة معزولة تماماً لكشط السيرفرات الحالية من الـ DOM
 async function extractCurrentVisibleServers(page, currentQualityName) {
     return await page.evaluate((qualityLabel) => {
         const serverItems = document.querySelectorAll('.servers__list ul li');
