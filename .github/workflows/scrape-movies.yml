@@ -2,8 +2,8 @@ name: Scrape Arabic Movies
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # كل 6 ساعات
-  workflow_dispatch:  # تشغيل يدوي
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
   push:
     branches: [ main ]
 
@@ -23,7 +23,7 @@ jobs:
     - name: Install dependencies
       run: |
         npm init -y
-        npm install playwright @playwright/test
+        npm install playwright playwright-extra puppeteer-extra-plugin-stealth
     
     - name: Install Playwright browsers
       run: npx playwright install chromium
@@ -37,21 +37,10 @@ jobs:
     
     - name: Upload Debug Screenshots & JSON
       uses: actions/upload-artifact@v4
-      if: always() # تضمن رفع الصور والملفات حتى لو فشل السكريبت أو حدث Timeout
+      if: always()
       with:
         name: playwright-debug-files
         path: |
           *.png
           single_movie_result.json
-          movies_with_servers.json
-        retention-days: 5 # الاحتفاظ بالملفات لمدة 5 أيام لتوفير المساحة
-    
-    - name: Commit and push changes
-      run: |
-        git config --global user.name 'github-actions[bot]'
-        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        # قمت بتحديثها لتشمل أي ملف JSON مستخرج لمنع فشل الخطوة
-        git add *.json || true 
-        git diff --quiet && git diff --staged --quiet || (git commit -m "📊 Auto-update movies data [skip ci]" && git push)
-      env:
-        get-data-new: ${{ secrets.GITHUB_TOKEN }}
+        retention-days: 2
