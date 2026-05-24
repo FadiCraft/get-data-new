@@ -5,7 +5,12 @@ chromium.use(stealth);
 const fs = require('fs');
 const path = require('path');
 
-// دالة فك تشفير روابط الـ Base64
+// التأكد من وجود مجلد لحفظ الفيديوهات واللقطات
+const debugDir = path.join(process.cwd(), 'debug_media');
+const videoDir = path.join(process.cwd(), 'recordings');
+if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir);
+if (!fs.existsSync(videoDir)) fs.mkdirSync(videoDir);
+
 function decodeServerLink(rawLink) {
     try {
         let base64String = '';
@@ -22,7 +27,6 @@ function decodeServerLink(rawLink) {
     }
 }
 
-// دالة تحديد أولوية السيرفر
 function getServerPriority(url) {
     const lowerUrl = url.toLowerCase();
     if (lowerUrl.includes('vidmoly')) return 1;
@@ -32,7 +36,7 @@ function getServerPriority(url) {
 }
 
 async function scrapeMovies() {
-    console.log('🚀 جاري تشغيل المتصفح بوضع التخفي المتقدم...');
+    console.log('🚀 جاري تشغيل المتصفح بوضع التخفي المتقدم للتشخيص المعمق...');
     const browser = await chromium.launch({
         headless: true,
         args: [
@@ -43,26 +47,20 @@ async function scrapeMovies() {
         ]
     });
 
-    const context = await browser.newContext({
+    // سياق أولي لاستكشاف الرابط فقط
+    const contextInit = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
-        locale: 'ar-SA',
-        timezoneId: 'Asia/Riyadh',
     });
-
-    // صفحة استكشاف أولية للحصول على بيانات الفيلم ورابط المشاهدة
-    const initPage = await context.newPage();
+    
+    const initPage = await contextInit.newPage();
     let movie = {};
     let watchUrl = '';
 
     try {
         console.log('🔄 جاري فتح الصفحة الرئيسية للاستكشاف...');
-        await initPage.goto('https://m.asd.ink/category/arabic-movies-14/', {
-            waitUntil: 'domcontentloaded',
-            timeout: 60000
-        });
-
-        await initPage.waitForTimeout(6000);
+        await initPage.goto('https://m.asd.ink/category/arabic-movies-14/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await initPage.waitForTimeout(5000);
         
         const movies = await initPage.evaluate(() => {
             const movieElements = document.querySelectorAll('li .item__contents');
@@ -71,10 +69,7 @@ async function scrapeMovies() {
                 const linkElement = element.querySelector('a.movie__block');
                 const titleElement = element.querySelector('h3');
                 if (linkElement && titleElement) {
-                    moviesData.push({
-                        title: titleElement.textContent.trim(),
-                        movie_url: linkElement.href
-                    });
+                    moviesData.push({ title: titleElement.textContent.trim(), movie_url: linkElement.href });
                 }
             });
             return moviesData;
@@ -96,10 +91,9 @@ async function scrapeMovies() {
         await browser.close();
         return;
     } finally {
-        await initPage.close(); // نغلق صفحة الاستكشاف لنبدأ صفحات نظيفة للجودات
+        await contextInit.close();
     }
 
-    // المصفوفة الثابتة للجودات التي نريد فحصها بشكل مستقل ومضمون
     const targetQualities = [
         { name: '480p', index: 0 },
         { name: '720p', index: 1 },
@@ -108,55 +102,79 @@ async function scrapeMovies() {
 
     let allExtractedServers = [];
 
-    // الحيلة الجديدة: نفتح صفحة منفصلة تماماً من الصفر لكل جودة!
+    // بدء الفحص مع تفعيل ميزة تسجيل الفيديو الفردي لكل جودة
     for (const q of targetQualities) {
         console.log(`\n🎬 --- بدء دورة فحص مستقلة كاملة لجودة [${q.name}] ---`);
+        
+        // تفعيل ميزة تسجيل الفيديو داخل السياق (Context)
+        const context = await browser.newContext({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36',
+            viewport: { width: 1920, height: 1080 },
+            locale: 'ar-SA',
+            recordVideo: {
+                dir: videoDir, // مجلد حفظ الفيديو
+                size: { width: 1920, height: 1080 }
+            }
+        });
+
         const page = await context.newPage();
 
         try {
-            console.log(`🔄 [${q.name}] 1. بناء الجلسة الموثوقة بدخول صفحة الفيلم...`);
+            console.log(`🔄 [${q.name}] 1. بناء الجلسة ودخول صفحة الفيلم...`);
             await page.goto(movie.movie_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await page.waitForTimeout(4000);
 
             console.log(`🔄 [${q.name}] 2. الانتقال المباشر لصفحة المشاهدة...`);
             await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
             await page.evaluate(() => window.scrollBy(0, 500));
-            await page.waitForTimeout(5000); // انتظار استقرار الحاوية الافتراضية
+            await page.waitForTimeout(5000); 
 
-            console.log(`🔄 [${q.name}] 3. فتح القائمة المنسدلة والضغط على الجودة...`);
-            // فتح القائمة المنسدلة
+            // لقطة شاشة تشخيصية: حالة الصفحة قبل فعل أي شيء
+            await page.screenshot({ path: path.join(debugDir, `${q.name}_1_before_click.png`), fullPage: true });
+
+            console.log(`🔄 [${q.name}] 3. محاولة فتح القائمة المنسدلة...`);
             const switcherExists = await page.evaluate(() => !!document.querySelector('.quality__swither .title'));
+            
             if (switcherExists) {
+                // النقر لفتح القائمة المنسدلة
                 await page.click('.quality__swither .title', { timeout: 5000 });
-                await page.waitForTimeout(1000);
+                await page.waitForTimeout(1500);
+                
+                // لقطة شاشة تشخيصية: هل انفتحت القائمة المنسدلة بالفعل؟
+                await page.screenshot({ path: path.join(debugDir, `${q.name}_2_dropdown_opened.png`) });
 
-                // النقر على الجودة المحددة لهذه الدورة
+                // النقر على الجودة المحددة
                 const liSelector = `.quality__swither ul.qualities__list li:nth-child(${q.index + 1})`;
                 await page.click(liSelector, { force: true });
-                console.log(`⏳ [${q.name}] انتظار 5 ثوانٍ لتمكين الموقع من حقن سيرفرات الجودة الجديدة...`);
+                
+                console.log(`⏳ [${q.name}] انتظار 5 ثوانٍ للحقن الديناميكي...`);
                 await page.waitForTimeout(5000);
+
+                // لقطة شاشة تشخيصية: شكل الصفحة بعد اختيار الجودة والانتظار
+                await page.screenshot({ path: path.join(debugDir, `${q.name}_3_after_quality_select.png`), fullPage: true });
             } else {
-                console.log(`ℹ️ [${q.name}] لم يتم العثور على أداة تبديل، سيتم كشط المتوفر مباشرة.`);
+                console.log(`ℹ️ [${q.name}] تحذير: لم يتم العثور على أداة التبديل كليا بالصفحة!`);
             }
 
-            // كشط السيرفرات الناتجة عن هذه الدورة النظيفة
+            // كشط السيرفرات الناتجة
             const serversForThisQuality = await extractCurrentVisibleServers(page, q.name);
-            console.log(`⚡ [${q.name}] تم كشط ${serversForThisQuality.length} سيرفر بنجاح!`);
+            console.log(`⚡ [${q.name}] تم كشط ${serversForThisQuality.length} سيرفر.`);
             
             allExtractedServers = allExtractedServers.concat(serversForThisQuality);
 
         } catch (loopError) {
-            console.error(`❌ خطأ أثناء معالجة دورة جودة ${q.name}:`, loopError.message);
+            console.error(`❌ خطأ أثناء معالجة جودة ${q.name}:`, loopError.message);
+            await page.screenshot({ path: path.join(debugDir, `${q.name}_error.png`), fullPage: true });
         } finally {
-            await page.close(); // إغلاق الصفحة تماماً لتنظيف الذاكرة والجلسة للدورة القادمة
+            // إغلاق السياق مهم جداً ليقوم Playwright بإنهاء كتابة وحفظ ملف الفيديو بنجاح
+            await context.close(); 
         }
     }
 
-    // 3. التنظيف النهائي ومنع التكرار (رابط + جودة)
+    // 3. معالجة وتصفية المخرجات
     let uniqueServersMap = new Map();
     for (const srv of allExtractedServers) {
-        if (srv.name.includes('عرب سيد')) continue; // استبعاد عرب سيد
-        
+        if (srv.name.includes('عرب سيد')) continue;
         const uniqueKey = `${srv.iframe_url}_${srv.quality}`;
         if (!uniqueServersMap.has(uniqueKey)) {
             uniqueServersMap.set(uniqueKey, srv);
@@ -164,11 +182,8 @@ async function scrapeMovies() {
     }
 
     let filteredServers = Array.from(uniqueServersMap.values());
-
-    // الترتيب حسب الأولوية لتطبيقك
     filteredServers.sort((a, b) => a.priority - b.priority);
 
-    // إعادة الصياغة والترقيم النهائي
     const finalSortedServers = filteredServers.map((srv, index) => {
         return {
             name: `سيرفر ${index + 1}`,
@@ -179,20 +194,14 @@ async function scrapeMovies() {
 
     movie.servers = finalSortedServers;
 
-    if (finalSortedServers.length > 0) {
-        console.log(`\n🎉 انتصار ساحق ومكتمل! إجمالي السيرفرات المستخرجة والمفرزة لكل الجودات: ${finalSortedServers.length}`);
-        console.log(JSON.stringify(finalSortedServers, null, 2));
-    } else {
-        console.log('⚠️ لم يتم العثور على أي سيرفرات صالحة في كافة الدورات.');
-    }
+    console.log(`\n📁 التشخيص جاهز!`);
+    console.log(`📸 تم حفظ الصور التتابعية في المجلد: /debug_media`);
+    console.log(`🎥 تم حفظ الفيديوهات المسجلة للحركة كاملة في المجلد: /recordings`);
 
     fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
-    console.log(`\n📁 تم حفظ ملف البيانات المحدث والجاهز للاستخدام في: single_movie_result.json`);
-
     await browser.close();
 }
 
-// دالة الكشط وفك التشفير داخل المتصفح
 async function extractCurrentVisibleServers(page, qualityLabel) {
     return await page.evaluate((enforcedQuality) => {
         const serverItems = document.querySelectorAll('.servers__list ul li');
@@ -221,7 +230,6 @@ async function extractCurrentVisibleServers(page, qualityLabel) {
         serverItems.forEach((li) => {
             const nameElement = li.querySelector('span');
             const link = li.getAttribute('data-link');
-            
             if (link) {
                 const cleanIframeUrl = decodeInsideBrowser(link.trim());
                 extracted.push({
