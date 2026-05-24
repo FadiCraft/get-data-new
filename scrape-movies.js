@@ -22,13 +22,13 @@ function decodeServerLink(rawLink) {
     }
 }
 
-// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على نطاق الـ iframe (كلما قل الوزن، زادت الأولوية)
+// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر
 function getServerPriority(url) {
     const lowerUrl = url.toLowerCase();
-    if (lowerUrl.includes('vidmoly')) return 1; // الأولوية الأولى
-    if (lowerUrl.includes('vidara')) return 2;  // الأولوية الثانية
-    if (lowerUrl.includes('voe')) return 3;     // الأولوية الثالثة
-    return 4;                                   // أي سيرفر آخر يدعم m3u8 ديناميكي
+    if (lowerUrl.includes('vidmoly')) return 1;
+    if (lowerUrl.includes('vidara')) return 2;
+    if (lowerUrl.includes('voe')) return 3;
+    return 4;
 }
 
 async function scrapeMovies() {
@@ -51,6 +51,10 @@ async function scrapeMovies() {
     });
 
     const page = await context.newPage();
+    const screenshotDir = path.join(process.cwd(), 'screenshots');
+    if (!fs.existsSync(screenshotDir)) {
+        fs.mkdirSync(screenshotDir, { recursive: true });
+    }
 
     try {
         console.log('🔄 جاري فتح الصفحة الرئيسية...');
@@ -60,6 +64,9 @@ async function scrapeMovies() {
         });
 
         await page.waitForTimeout(6000);
+        await page.screenshot({ path: path.join(screenshotDir, '1-homepage.png'), fullPage: true });
+        console.log('📸 تم التقاط صورة الصفحة الرئيسية');
+        
         await page.evaluate(() => window.scrollBy(0, 400));
         await page.waitForTimeout(2000);
 
@@ -89,18 +96,47 @@ async function scrapeMovies() {
         
         let watchUrl = movie.movie_url.endsWith('/') ? movie.movie_url + 'watch/' : movie.movie_url + '/watch/';
         movie.watch_url = watchUrl;
-        movie.qualities = []; // سيحتوي على جميع الجودات مع سيرفراتها
+        movie.qualities = [];
 
-        console.log('🔄 جاري التوجه لصفحة الفيلم الرئيسية أولاً لبناء جلسة موثوقة...');
+        console.log('🔄 جاري التوجه لصفحة الفيلم الرئيسية أولاً...');
         await page.goto(movie.movie_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(4000);
+        await page.screenshot({ path: path.join(screenshotDir, '2-movie-page.png'), fullPage: true });
+        console.log('📸 تم التقاط صورة صفحة الفيلم');
 
-        console.log('🎬 جاري الانتقال الآمن لصفحة المشاهدة وسيرفرات العرض...');
+        console.log('🎬 جاري الانتقال لصفحة المشاهدة...');
         await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         await page.evaluate(() => window.scrollBy(0, 500));
         console.log('⏳ انتظار لتحميل قائمة الجودات والسيرفرات...');
         await page.waitForTimeout(7000);
+        await page.screenshot({ path: path.join(screenshotDir, '3-watch-page.png'), fullPage: true });
+        console.log('📸 تم التقاط صورة صفحة المشاهدة');
+
+        // التحقق من وجود قائمة الجودات
+        const qualitySwitcher = await page.$('.quality__swither');
+        if (!qualitySwitcher) {
+            console.log('❌ لم يتم العثور على محول الجودات');
+            await page.screenshot({ path: path.join(screenshotDir, '4-no-quality-switcher.png'), fullPage: true });
+            return;
+        }
+
+        // فتح قائمة الجودات المنسدلة
+        console.log('🔽 جاري فتح قائمة الجودات المنسدلة...');
+        await page.screenshot({ path: path.join(screenshotDir, '4-before-click-quality.png'), fullPage: true });
+        
+        // النقر على زر فتح القائمة
+        try {
+            await page.click('.quality__swither .title');
+            console.log('✅ تم النقر على عنوان الجودة');
+        } catch (e) {
+            console.log('⚠️ فشل النقر على العنوان، جاري تجربة النقر على العنصر بالكامل...');
+            await page.click('.quality__swither');
+        }
+        
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: path.join(screenshotDir, '5-quality-menu-opened.png'), fullPage: true });
+        console.log('📸 تم التقاط صورة بعد فتح قائمة الجودات');
 
         // استخراج الجودات المتاحة
         const availableQualities = await page.evaluate(() => {
@@ -113,27 +149,64 @@ async function scrapeMovies() {
                     qualities.push({
                         quality: quality,
                         title: title || '',
-                        isActive: li.classList.contains('active')
+                        isActive: li.classList.contains('active'),
+                        isVisible: li.offsetParent !== null // التحقق من الظهور
                     });
                 }
             });
             return qualities;
         });
 
-        console.log(`📊 تم العثور على ${availableQualities.length} جودة: ${availableQualities.map(q => q.quality + 'p').join(', ')}`);
+        console.log(`📊 تم العثور على ${availableQualities.length} جودة: ${availableQualities.map(q => q.quality + 'p (visible: ' + q.isVisible + ')').join(', ')}`);
 
-        // المرور على كل جودة واستخراج السيرفرات الخاصة بها
-        for (const qualityInfo of availableQualities) {
+        // المرور على كل جودة واستخراج السيرفرات
+        for (let i = 0; i < availableQualities.length; i++) {
+            const qualityInfo = availableQualities[i];
             console.log(`\n🔄 جاري معالجة الجودة: ${qualityInfo.quality}p...`);
 
-            // النقر على الجودة لتحديدها (إذا لم تكن محددة مسبقاً)
+            // إذا لم تكن الجودة محددة مسبقاً، نختارها
             if (!qualityInfo.isActive) {
-                await page.click(`.qualities__list li[data-quality="${qualityInfo.quality}"]`);
-                console.log(`   👆 تم النقر على الجودة ${qualityInfo.quality}p`);
-                await page.waitForTimeout(3000); // انتظار تحميل السيرفرات الجديدة
+                // إعادة فتح القائمة إذا كانت مقفلة
+                if (i > 0) {
+                    console.log('   🔽 إعادة فتح قائمة الجودات...');
+                    try {
+                        await page.click('.quality__swither .title');
+                        await page.waitForTimeout(1000);
+                    } catch (e) {
+                        console.log('   ⚠️ محاولة بديلة لفتح القائمة...');
+                        await page.click('.quality__swither');
+                        await page.waitForTimeout(1000);
+                    }
+                }
+
+                console.log(`   👆 جاري اختيار الجودة ${qualityInfo.quality}p...`);
+                await page.screenshot({ 
+                    path: path.join(screenshotDir, `6-before-select-${qualityInfo.quality}p.png`), 
+                    fullPage: true 
+                });
+
+                // تجربة طرق مختلفة للنقر
+                try {
+                    await page.click(`.qualities__list li[data-quality="${qualityInfo.quality}"]`);
+                    console.log(`   ✅ تم النقر على الجودة ${qualityInfo.quality}p`);
+                } catch (e) {
+                    console.log(`   ⚠️ فشل النقر المباشر، جاري استخدام JavaScript...`);
+                    await page.evaluate((quality) => {
+                        const element = document.querySelector(`.qualities__list li[data-quality="${quality}"]`);
+                        if (element) {
+                            element.click();
+                        }
+                    }, qualityInfo.quality);
+                }
+                
+                await page.waitForTimeout(3000);
+                await page.screenshot({ 
+                    path: path.join(screenshotDir, `7-after-select-${qualityInfo.quality}p.png`), 
+                    fullPage: true 
+                });
             }
 
-            // كشط السيرفرات الخام من الـ HTML
+            // كشط السيرفرات
             const rawServers = await page.evaluate(() => {
                 const serverItems = document.querySelectorAll('.servers__list ul li');
                 const extracted = [];
@@ -151,16 +224,11 @@ async function scrapeMovies() {
                 return extracted;
             });
 
-            // تصفية، استبعاد، وفك التشفير
+            // تصفية وفك التشفير
             let processedServers = [];
             for (const srv of rawServers) {
-                // استبعاد سيرفر عرب سيد تماماً بناءً على الاسم المكتوب
-                if (srv.name.includes('عرب سيد')) {
-                    continue; 
-                }
-
+                if (srv.name.includes('عرب سيد')) continue;
                 const cleanIframeUrl = decodeServerLink(srv.raw_link);
-                
                 processedServers.push({
                     name: srv.name,
                     quality: srv.quality,
@@ -169,19 +237,13 @@ async function scrapeMovies() {
                 });
             }
 
-            // إعادة ترتيب المصفوفة تصاعدياً بناءً على رتبة الأولوية (Priority)
             processedServers.sort((a, b) => a.priority - b.priority);
+            processedServers = processedServers.map((srv, index) => ({
+                name: `سيرفر ${index + 1}`,
+                quality: srv.quality,
+                iframe_url: srv.iframe_url
+            }));
 
-            // إعادة تسمية السيرفرات بشكل مرقم ومنظم
-            processedServers = processedServers.map((srv, index) => {
-                return {
-                    name: `سيرفر ${index + 1}`,
-                    quality: srv.quality,
-                    iframe_url: srv.iframe_url
-                };
-            });
-
-            // إضافة الجودة مع سيرفراتها إلى المصفوفة الرئيسية
             movie.qualities.push({
                 quality: qualityInfo.quality + 'p',
                 title: qualityInfo.title,
@@ -195,23 +257,28 @@ async function scrapeMovies() {
         // عرض ملخص النتائج
         console.log('\n📊 ملخص السيرفرات المستخرجة حسب الجودة:');
         movie.qualities.forEach(q => {
-            console.log(`\n🎬 الجودة: ${q.quality}`);
-            console.log(`   عدد السيرفرات: ${q.servers_count}`);
+            console.log(`\n🎬 الجودة: ${q.quality} - ${q.servers_count} سيرفر`);
             q.servers.forEach(srv => {
                 console.log(`   - ${srv.name}: ${srv.iframe_url.substring(0, 50)}...`);
             });
         });
 
-        // حفظ النتائج في ملف JSON
+        // حفظ النتائج
         fs.writeFileSync(
             path.join(process.cwd(), 'single_movie_result.json'), 
             JSON.stringify(movie, null, 2), 
             'utf-8'
         );
-        console.log(`\n📁 تم حفظ ملف البيانات المحدث في: single_movie_result.json`);
+        console.log(`\n📁 تم حفظ الملف في: single_movie_result.json`);
+        console.log(`📁 مجلد الصور: ${screenshotDir}`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
+        await page.screenshot({ 
+            path: path.join(screenshotDir, 'error-screenshot.png'), 
+            fullPage: true 
+        });
+        console.log('📸 تم التقاط صورة لحالة الخطأ');
     } finally {
         await browser.close();
     }
