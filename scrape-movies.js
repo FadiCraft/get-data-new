@@ -33,7 +33,6 @@ function getServerPriority(url) {
 
 // دالة مخصصة لجمع وتصفية السيرفرات من الصفحة الحالية
 async function extractAndProcessServers(page) {
-    // كشط السيرفرات الخام من الـ HTML
     const rawServers = await page.evaluate(() => {
         const serverItems = document.querySelectorAll('.servers__list ul li');
         const extracted = [];
@@ -53,7 +52,6 @@ async function extractAndProcessServers(page) {
 
     let processedServers = [];
     for (const srv of rawServers) {
-        // استبعاد سيرفر عرب سيد تماماً
         if (srv.name.includes('عرب سيد')) {
             continue; 
         }
@@ -68,10 +66,8 @@ async function extractAndProcessServers(page) {
         });
     }
 
-    // ترتيب تصاعدي حسب الأولوية
     processedServers.sort((a, b) => a.priority - b.priority);
 
-    // إعادة التسمية المرقمة
     return processedServers.map((srv, index) => ({
         name: `سيرفر ${index + 1}`,
         quality: srv.quality,
@@ -91,7 +87,6 @@ async function scrapeMovies() {
         ]
     });
 
-    // إنشاء المجلد المخصص للفيديوهات لضمان عدم حدوث خطأ
     const videoDir = path.join(process.cwd(), 'videos');
     if (!fs.existsSync(videoDir)){
         fs.mkdirSync(videoDir);
@@ -102,7 +97,6 @@ async function scrapeMovies() {
         viewport: { width: 1920, height: 1080 },
         locale: 'ar-SA',
         timezoneId: 'Asia/Riyadh',
-        // تفعيل خاصية تسجيل الفيديو وحفظه في مجلد videos
         recordVideo: {
             dir: 'videos/',
             size: { width: 1920, height: 1080 }
@@ -149,7 +143,6 @@ async function scrapeMovies() {
         let watchUrl = movie.movie_url.endsWith('/') ? movie.movie_url + 'watch/' : movie.movie_url + '/watch/';
         movie.watch_url = watchUrl;
         
-        // كائن لحفظ السيرفرات مقسمة حسب الجودة
         movie.extracted_data = {
             default_quality_servers: [],
             high_quality_servers: []
@@ -174,16 +167,13 @@ async function scrapeMovies() {
 
         // 2. منطق فتح قائمة الجودات والتحويل لأعلى جودة
         console.log('⚙️ جاري محاولة فتح قائمة الجودات وتحديد أعلى جودة...');
-        
-        // التحقق من وجود صندوق تحويل الجودات والنقر عليه لفتح القائمة المنسدلة
         const switcherSelector = '.quality__swither.full__767, .quality__swither';
         const isSwitcherVisible = await page.locator(switcherSelector).count();
         
         if (isSwitcherVisible > 0) {
             await page.click(switcherSelector);
-            await page.waitForTimeout(1500); // انتظار أن تفتح القائمة بسلاسة
+            await page.waitForTimeout(1500);
 
-            // استخراج خيارات الجودة المتاحة لاختيار أعلاها رقمياً
             const targetQualityData = await page.evaluate(() => {
                 const liElements = document.querySelectorAll('.qualities__list li');
                 let highestQuality = -1;
@@ -206,15 +196,22 @@ async function scrapeMovies() {
             if (targetQualityData.selectorIndex !== -1 && targetQualityData.highestQuality > 0) {
                 console.log(`🎯 أعلى جودة تم رصدها هي: ${targetQualityData.highestQuality}p. جاري النقر عليها...`);
                 
-                // النقر على العنصر المقابل لأعلى جودة مصفوفة
                 const qualityItems = page.locator('.qualities__list li');
                 await qualityItems.nth(targetQualityData.selectorIndex).click();
                 
-                console.log('⏳ جاري تحميل السيرفرات الجديدة الخاصة بالجودة العالية...');
-                // ننتظر 8 ثواني للتأكد من إعادة بناء السيرفرات داخل الصفحة بعد الضغط
-                await page.waitForTimeout(8000);
+                console.log('⏳ تم النقر. جاري الانتظار حتى تختفي كلمة "جاري التحميل..." وتظهر السيرفرات الجديدة...');
+                
+                // التعديل الجوهري: ننتظر أولاً ظهور السيرفرات الجديدة داخل الـ قائمة ul li
+                try {
+                    await page.waitForSelector('.servers__list ul li', { timeout: 15000 });
+                    // إعطاء مهلة إضافية ثانية واحدة لتأكيد استقرار الصفحة تماماً
+                    await page.waitForTimeout(2000); 
+                } catch (e) {
+                    console.log('⚠️ استغرق تحميل السيرفرات الجديدة وقتاً طويلاً، سيتم المحاولة مع مهلة ثابته.');
+                    await page.waitForTimeout(8000);
+                }
 
-                // 3. إعادة استخراج السيرفرات الجديدة بعد التحويل
+                // 3. إعادة استخراج السيرفرات الجديدة بعد التحويل الاستقرار
                 console.log('📊 استخراج سيرفرات الجودة العالية الحالية...');
                 const highServers = await extractAndProcessServers(page);
                 movie.extracted_data.high_quality_servers = highServers;
@@ -223,10 +220,9 @@ async function scrapeMovies() {
                 console.log('⚠️ لم يتم العثور على جودات متعددة صالحة داخل القائمة المنسدلة.');
             }
         } else {
-            console.log('⚠️ لم يتم العثور على زر تبديل الجودات (quality__swither) في هذه الصفحة، قد يكون للفيلم جودة واحدة فقط.');
+            console.log('⚠️ لم يتم العثور على زر تبديل الجودات في هذه الصفحة.');
         }
 
-        // الحفاظ على التوافقية القديمة للملف الرئيسي وتخزين أعلى جودة كخيار أساسي في كائن servers إذا توفرت
         movie.servers = movie.extracted_data.high_quality_servers.length > 0 
             ? movie.extracted_data.high_quality_servers 
             : movie.extracted_data.default_quality_servers;
@@ -237,7 +233,6 @@ async function scrapeMovies() {
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
     } finally {
-        // إغلاق السياق والمتصفح مهم جداً لكي يقوم Playwright بإنهاء حفظ ملف الفيديو وإغلاقه بشكل سليم!
         await context.close();
         await browser.close();
         console.log('🎬 تم إغلاق المتصفح وحفظ ملف الفيديو بنجاح.');
