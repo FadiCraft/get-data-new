@@ -22,17 +22,65 @@ function decodeServerLink(rawLink) {
     }
 }
 
-// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على نطاق الـ iframe (كلما قل الوزن، زادت الأولوية)
+// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على نطاق الـ iframe
 function getServerPriority(url) {
     const lowerUrl = url.toLowerCase();
     if (lowerUrl.includes('vidmoly')) return 1; // الأولوية الأولى
     if (lowerUrl.includes('vidara')) return 2;  // الأولوية الثانية
     if (lowerUrl.includes('voe')) return 3;     // الأولوية الثالثة
-    return 4;                                   // أي سيرفر آخر يدعم m3u8 ديناميكي
+    return 4;                                   // أي سيرفر آخر
+}
+
+// دالة مخصصة لجمع وتصفية السيرفرات من الصفحة الحالية
+async function extractAndProcessServers(page) {
+    // كشط السيرفرات الخام من الـ HTML
+    const rawServers = await page.evaluate(() => {
+        const serverItems = document.querySelectorAll('.servers__list ul li');
+        const extracted = [];
+        serverItems.forEach((li) => {
+            const nameElement = li.querySelector('span');
+            const link = li.getAttribute('data-link');
+            if (link) {
+                extracted.push({
+                    name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
+                    raw_link: link.trim(),
+                    quality: li.getAttribute('data-qu') || 'unknown'
+                });
+            }
+        });
+        return extracted;
+    });
+
+    let processedServers = [];
+    for (const srv of rawServers) {
+        // استبعاد سيرفر عرب سيد تماماً
+        if (srv.name.includes('عرب سيد')) {
+            continue; 
+        }
+
+        const cleanIframeUrl = decodeServerLink(srv.raw_link);
+        
+        processedServers.push({
+            name: srv.name,
+            quality: srv.quality,
+            iframe_url: cleanIframeUrl,
+            priority: getServerPriority(cleanIframeUrl)
+        });
+    }
+
+    // ترتيب تصاعدي حسب الأولوية
+    processedServers.sort((a, b) => a.priority - b.priority);
+
+    // إعادة التسمية المرقمة
+    return processedServers.map((srv, index) => ({
+        name: `سيرفر ${index + 1}`,
+        quality: srv.quality,
+        iframe_url: srv.iframe_url
+    }));
 }
 
 async function scrapeMovies() {
-    console.log('🚀 جاري تشغيل المتصفح بوضع التخفي المتقدم...');
+    console.log('🚀 جاري تشغيل المتصفح بوضع التخفي وتفعيل تسجيل الفيديو...');
     const browser = await chromium.launch({
         headless: true,
         args: [
@@ -43,11 +91,22 @@ async function scrapeMovies() {
         ]
     });
 
+    // إنشاء المجلد المخصص للفيديوهات لضمان عدم حدوث خطأ
+    const videoDir = path.join(process.cwd(), 'videos');
+    if (!fs.existsSync(videoDir)){
+        fs.mkdirSync(videoDir);
+    }
+
     const context = await browser.newContext({
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         viewport: { width: 1920, height: 1080 },
         locale: 'ar-SA',
         timezoneId: 'Asia/Riyadh',
+        // تفعيل خاصية تسجيل الفيديو وحفظه في مجلد videos
+        recordVideo: {
+            dir: 'videos/',
+            size: { width: 1920, height: 1080 }
+        }
     });
 
     const page = await context.newPage();
@@ -89,83 +148,99 @@ async function scrapeMovies() {
         
         let watchUrl = movie.movie_url.endsWith('/') ? movie.movie_url + 'watch/' : movie.movie_url + '/watch/';
         movie.watch_url = watchUrl;
-        movie.servers = [];
+        
+        // كائن لحفظ السيرفرات مقسمة حسب الجودة
+        movie.extracted_data = {
+            default_quality_servers: [],
+            high_quality_servers: []
+        };
 
         console.log('🔄 جاري التوجه لصفحة الفيلم الرئيسية أولاً لبناء جلسة موثوقة...');
         await page.goto(movie.movie_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(4000);
 
-        console.log('🎬 جاري الانتقال الآمن لصفحة المشاهدة وسيرفرات العرض...');
+        console.log('🎬 جاري الانتقال لصفحة المشاهدة وسيرفرات العرض...');
         await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         
         await page.evaluate(() => window.scrollBy(0, 500));
-        console.log('⏳ انتظار لفك شيفرة حاوية السيرفرات...');
+        console.log('⏳ انتظار لفك شيفرة حاوية السيرفرات (الجودة الافتراضية)...');
         await page.waitForTimeout(7000);
 
-        // كشط السيرفرات الخام من الـ HTML
-        const rawServers = await page.evaluate(() => {
-            const serverItems = document.querySelectorAll('.servers__list ul li');
-            const extracted = [];
-            serverItems.forEach((li) => {
-                const nameElement = li.querySelector('span');
-                const link = li.getAttribute('data-link');
-                if (link) {
-                    extracted.push({
-                        name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
-                        raw_link: link.trim(),
-                        quality: li.getAttribute('data-qu') || 'unknown'
-                    });
-                }
-            });
-            return extracted;
-        });
+        // 1. استخراج سيرفرات الجودة الافتراضية الأولى
+        console.log('📊 استخراج سيرفرات الجودة الافتراضية أولاً...');
+        const defaultServers = await extractAndProcessServers(page);
+        movie.extracted_data.default_quality_servers = defaultServers;
+        console.log(`✅ تم استخراج (${defaultServers.length}) سيرفر للجودة الافتراضية.`);
 
-        // تصفية، استبعاد، وفك التشفير
-        let processedServers = [];
-        for (const srv of rawServers) {
-            // 1. استبعاد سيرفر عرب سيد تماماً بناءً على الاسم المكتوب
-            if (srv.name.includes('عرب سيد')) {
-                continue; 
+        // 2. منطق فتح قائمة الجودات والتحويل لأعلى جودة
+        console.log('⚙️ جاري محاولة فتح قائمة الجودات وتحديد أعلى جودة...');
+        
+        // التحقق من وجود صندوق تحويل الجودات والنقر عليه لفتح القائمة المنسدلة
+        const switcherSelector = '.quality__swither.full__767, .quality__swither';
+        const isSwitcherVisible = await page.locator(switcherSelector).count();
+        
+        if (isSwitcherVisible > 0) {
+            await page.click(switcherSelector);
+            await page.waitForTimeout(1500); // انتظار أن تفتح القائمة بسلاسة
+
+            // استخراج خيارات الجودة المتاحة لاختيار أعلاها رقمياً
+            const targetQualityData = await page.evaluate(() => {
+                const liElements = document.querySelectorAll('.qualities__list li');
+                let highestQuality = -1;
+                let selectorIndex = -1;
+
+                liElements.forEach((li, index) => {
+                    const qAttr = li.getAttribute('data-quality');
+                    if (qAttr) {
+                        const qNum = parseInt(qAttr, 10);
+                        if (!isNaN(qNum) && qNum > highestQuality) {
+                            highestQuality = qNum;
+                            selectorIndex = index;
+                        }
+                    }
+                });
+
+                return { highestQuality, selectorIndex };
+            });
+
+            if (targetQualityData.selectorIndex !== -1 && targetQualityData.highestQuality > 0) {
+                console.log(`🎯 أعلى جودة تم رصدها هي: ${targetQualityData.highestQuality}p. جاري النقر عليها...`);
+                
+                // النقر على العنصر المقابل لأعلى جودة مصفوفة
+                const qualityItems = page.locator('.qualities__list li');
+                await qualityItems.nth(targetQualityData.selectorIndex).click();
+                
+                console.log('⏳ جاري تحميل السيرفرات الجديدة الخاصة بالجودة العالية...');
+                // ننتظر 8 ثواني للتأكد من إعادة بناء السيرفرات داخل الصفحة بعد الضغط
+                await page.waitForTimeout(8000);
+
+                // 3. إعادة استخراج السيرفرات الجديدة بعد التحويل
+                console.log('📊 استخراج سيرفرات الجودة العالية الحالية...');
+                const highServers = await extractAndProcessServers(page);
+                movie.extracted_data.high_quality_servers = highServers;
+                console.log(`✅ تم استخراج (${highServers.length}) سيرفر للجودة العالية الجديدة.`);
+            } else {
+                console.log('⚠️ لم يتم العثور على جودات متعددة صالحة داخل القائمة المنسدلة.');
             }
-
-            const cleanIframeUrl = decodeServerLink(srv.raw_link);
-            
-            processedServers.push({
-                name: srv.name,
-                quality: srv.quality,
-                iframe_url: cleanIframeUrl,
-                priority: getServerPriority(cleanIframeUrl) // تحديد رتبة الأولوية
-            });
-        }
-
-        // 2. إعادة ترتيب المصفوفة تصاعدياً بناءً على رتبة الأولوية (Priority)
-        processedServers.sort((a, b) => a.priority - b.priority);
-
-        // 3. إعادة تسمية السيرفرات بشكل مرقم ومنظم لتطبيقك (سيرفر 1، سيرفر 2...) بعد الترتيب الجديد
-        processedServers = processedServers.map((srv, index) => {
-            return {
-                name: `سيرفر ${index + 1}`, // تضمن أن يبدأ جهازك دائماً برقم 1 كأفضل خيار
-                quality: srv.quality,
-                iframe_url: srv.iframe_url
-            };
-        });
-
-        movie.servers = processedServers;
-
-        if (processedServers.length > 0) {
-            console.log(`\n📊 تم تصفية وترتيب السيرفرات حسب الأفضلية لتطبيقك:`);
-            console.log(JSON.stringify(processedServers, null, 2));
         } else {
-            console.log('⚠️ لم يتم العثور على سيرفرات صالحة بعد التصفية.');
+            console.log('⚠️ لم يتم العثور على زر تبديل الجودات (quality__swither) في هذه الصفحة، قد يكون للفيلم جودة واحدة فقط.');
         }
+
+        // الحفاظ على التوافقية القديمة للملف الرئيسي وتخزين أعلى جودة كخيار أساسي في كائن servers إذا توفرت
+        movie.servers = movie.extracted_data.high_quality_servers.length > 0 
+            ? movie.extracted_data.high_quality_servers 
+            : movie.extracted_data.default_quality_servers;
 
         fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
-        console.log(`\n📁 تم حفظ ملف البيانات المحدث والمصفى في: single_movie_result.json`);
+        console.log(`\n📁 تم حفظ ملف البيانات بنجاح: single_movie_result.json`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
     } finally {
+        // إغلاق السياق والمتصفح مهم جداً لكي يقوم Playwright بإنهاء حفظ ملف الفيديو وإغلاقه بشكل سليم!
+        await context.close();
         await browser.close();
+        console.log('🎬 تم إغلاق المتصفح وحفظ ملف الفيديو بنجاح.');
     }
 }
 
