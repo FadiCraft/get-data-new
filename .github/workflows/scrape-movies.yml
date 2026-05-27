@@ -23,7 +23,6 @@ jobs:
     - name: Install dependencies
       run: |
         npm init -y
-        # تم إضافة المكتبات الإضافية هنا لضمان عمل السكريبت بنجاح دون أخطاء missing modules
         npm install playwright playwright-extra puppeteer-extra-plugin-stealth
     
     - name: Install Playwright browsers
@@ -36,13 +35,14 @@ jobs:
     - name: Scrape movies
       run: node scrape-movies.js
     
-    - name: Upload Debug Screenshots & JSON
+    - name: Upload Debug Videos, Screenshots & JSON
       uses: actions/upload-artifact@v4
-      if: always()
+      if: always() # يضمن الرفع حتى لو فشل السكريبت لتشاهد أين توقف المتصفح
       with:
         name: playwright-debug-files
         path: |
           *.png
+          videos/
           single_movie_result.json
           movies_with_servers.json
         retention-days: 5
@@ -54,4 +54,4 @@ jobs:
         git add *.json || true 
         git diff --quiet && git diff --staged --quiet || (git commit -m "📊 Auto-update movies data [skip ci]" && git push)
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # تم تعديل التسمية هنا لتتوافق مع معايير جيتهاب الافتراضية
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
