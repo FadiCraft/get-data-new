@@ -5,7 +5,31 @@ chromium.use(stealth);
 const fs = require('fs');
 const path = require('path');
 
-// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على النطاق
+// الدالة السحرية لفك تشفير روابط الحماية المكشوفة والـ Base64
+function decodeServerLink(rawLink) {
+    if (!rawLink) return '';
+    try {
+        let base64String = '';
+        if (rawLink.includes('url=')) {
+            base64String = rawLink.split('url=')[1];
+        } else if (rawLink.includes('id=')) {
+            base64String = rawLink.split('id=')[1];
+        } else {
+            return rawLink; // إذا كان الرابط أصلياً ومكشوفاً بالفعل
+        }
+        
+        // تنظيف الرابط من أي بارامترات إضافية قد تأتي بعد نص الـ Base64
+        if (base64String.includes('&')) {
+            base64String = base64String.split('&')[0];
+        }
+        
+        return Buffer.from(base64String, 'base64').toString('utf-8');
+    } catch (e) {
+        return rawLink;
+    }
+}
+
+// دالة تحديد الأولوية والترتيب بناءً على النطاق الحقيقي النظيف
 function getServerPriority(url) {
     if (!url) return 4;
     const lowerUrl = url.toLowerCase();
@@ -49,7 +73,6 @@ async function scrapeMovies() {
 
         await page.waitForTimeout(5000);
 
-        // الحصول على الفيلم الأول فقط من القائمة
         const firstMovieUrl = await page.evaluate(() => {
             const linkElement = document.querySelector('li .item__contents a.movie__block');
             return linkElement ? linkElement.href : null;
@@ -64,20 +87,17 @@ async function scrapeMovies() {
         await page.goto(firstMovieUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.waitForTimeout(4000);
 
-        // --- كشط البيانات الكاملة المفيدة من صفحة الفيلم التفصيلية ---
-        console.log('📊 جاري كشط تفاصيل الفيلم (الاسم، الصورة، القصة، البيانات العامة)...');
+        console.log('📊 جاري كشط تفاصيل الفيلم العامة...');
         const movieDetails = await page.evaluate(() => {
             const title = document.querySelector('.post__name')?.textContent.trim() || '';
             const poster = document.querySelector('.poster-img')?.getAttribute('src') || '';
             const story = document.querySelector('.post__story p')?.textContent.trim() || '';
             
-            // استخراج تفاصيل العرض المنبثقة من القائمة العامة
             const infoAreaItems = document.querySelectorAll('.info__area__ul > li');
             const infoData = {};
             
             infoAreaItems.forEach(li => {
                 const labelText = li.querySelector('.title__kit span')?.textContent.trim() || '';
-                
                 if (labelText.includes('تصنيف')) {
                     infoData.category = Array.from(li.querySelectorAll('.tags__list li a')).map(a => a.textContent.trim());
                 } else if (labelText.includes('نوع')) {
@@ -101,7 +121,6 @@ async function scrapeMovies() {
             return { title, poster, story, info: infoData, trailer, rating };
         });
 
-        // إنشاء كائن الحفظ النهائي المخصص لك
         let finalMovieResult = {
             title: movieDetails.title,
             movie_url: firstMovieUrl,
@@ -118,83 +137,84 @@ async function scrapeMovies() {
             }
         };
 
-        console.log(`🎬 جاري الانتقال لصفحة المشاهدة لبدء استخراج جودات السيرفرات المتعددة برمجياً...`);
+        console.log(`🎬 جاري الانتقال لصفحة المشاهدة لبدء فك التشفير واستخراج الجودات...`);
         await page.goto(finalMovieResult.watch_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
         await page.evaluate(() => window.scrollBy(0, 500));
         await page.waitForTimeout(6000);
 
-        // المصفوفة المستهدفة للتنقل بين الجودات بالترتيب المطلوب
         const targetQualities = ["480", "720", "1080"];
 
         for (const qKey of targetQualities) {
             console.log(`\n⚙️ محاولة البحث والتنقل لجودة: [${qKey}p]...`);
             
-            // فتح قائمة الجودات المنسدلة أولاً إذا كانت مغلقة
             const switcherSelector = '.quality__swither.full__767, .quality__swither';
             if (await page.locator(switcherSelector).count() > 0) {
                 await page.click(switcherSelector);
                 await page.waitForTimeout(1000);
             }
 
-            // العثور على العنصر المطابق للجودة الحالية برمجياً والنقر عليه
             const qualityLiSelector = `.qualities__list li[data-quality="${qKey}"]`;
             const hasQuality = await page.locator(qualityLiSelector).count();
 
             if (hasQuality > 0) {
-                console.log(`🎯 تم رصد خيار جودة ${qKey}p في القائمة. جاري النقر لتحديث الهيكل الحامي...`);
+                console.log(`🎯 جاري النقر لتوليد هيكل سيرفرات جودة ${qKey}p...`);
                 await page.click(qualityLiSelector);
-                await page.waitForTimeout(5000); // إعطاء الوقت الكافي للهيكل الجديد وجافا سكريبت ليقوم بالتحضير
+                await page.waitForTimeout(5000); 
 
-                // كشط النقر الفعلي على سيرفرات الهيكل المحدث لحل حماية روابط الموقع
                 const serverElements = page.locator('.servers__list ul li');
                 const count = await serverElements.count();
                 let extractedServers = [];
 
-                console.log(`📊 تم العثور على (${count}) سيرفر لجودة ${qKey}p. بدء استخراج الروابط الخلفية بالنقر المباشر...`);
+                console.log(`📊 تم رصد (${count}) سيرفر. جاري فك حماية الروابط وتصفيتها برمجياً...`);
 
                 for (let i = 0; i < count; i++) {
                     const srvLocator = serverElements.nth(i);
                     const serverName = await srvLocator.locator('span').textContent();
 
-                    if (serverName.includes('عرب سيد')) continue; // استبعاد سيرفر الموقع الحامي الأساسي
+                    if (serverName.includes('عرب سيد')) continue; 
 
                     console.log(`   👇 نمر وننقر على: [${serverName.trim()}]...`);
                     await srvLocator.click();
-                    await page.waitForTimeout(2500); // انتظار حقن الـ iframe الفعلي في الصندوق
+                    await page.waitForTimeout(2500); 
 
-                    const iframeUrl = await page.evaluate(() => {
+                    // التقاط رابط المشغل الفعال الحالي من الصفحة
+                    const rawIframeUrl = await page.evaluate(() => {
                         const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
                         return iframe ? iframe.src : null;
                     });
 
-                    if (iframeUrl && !iframeUrl.includes('about:blank')) {
+                    if (rawIframeUrl && !rawIframeUrl.includes('about:blank')) {
+                        // كسر وتفكيك الحماية فوراً هنا للحصول على الرابط الأصلي (مثل Vidmoly, Luluvid... إلخ)
+                        const cleanRealUrl = decodeServerLink(rawIframeUrl);
+                        
+                        console.log(`   🔓 تم كسر الحماية بنجاح واستخراج الرابط الأصلي: ${cleanRealUrl}`);
+                        
                         extractedServers.push({
                             name: serverName.trim(),
-                            iframe_url: iframeUrl,
-                            priority: getServerPriority(iframeUrl)
+                            iframe_url: cleanRealUrl,
+                            priority: getServerPriority(cleanRealUrl) // الترتيب بناءً على النطاق المفتوح الجديد
                         });
                     }
                 }
 
-                // ترتيب السيرفرات وإعادة تسميتها بطريقة نظيفة متطابقة لكل جودة
+                // ترتيب السيرفرات المفتوحة (Vidmoly أولاً) وإعادة صياغة المظهر النهائي
                 extractedServers.sort((a, b) => a.priority - b.priority);
                 finalMovieResult.qualities[`${qKey}p`] = extractedServers.map((srv, idx) => ({
                     name: `سيرفر ${idx + 1}`,
                     iframe_url: srv.iframe_url
                 }));
 
-                console.log(`✅ انتهى استخراج جودة ${qKey}p بنجاح.`);
+                console.log(`✅ انتهى فك وتجميع جودة ${qKey}p بنجاح.`);
             } else {
                 console.log(`⏩ جودة ${qKey}p غير متوفرة لهذا الفيلم بالموقع، تم تخطيها.`);
             }
         }
 
-        // --- حفظ البيانات بملف ومصفوفة تحتوي على فيلم واحد فقط كما طلبت تماماً ---
+        // حفظ المصفوفة التي تحتوي على فيلم واحد فقط بداخل ملف movies.json المحلي كلياً
         const moviesFilePath = path.join(process.cwd(), 'movies.json');
-        
-        // حفظ ملف movies.json يحتوي على كائن هذا الفيلم فقط بداخل المصفوفة
         fs.writeFileSync(moviesFilePath, JSON.stringify([finalMovieResult], null, 2), 'utf-8');
-        console.log(`\n📁 تم الحفظ بنجاح! ملف [movies.json] يحتوي الآن على فيلم واحد شامل بالكامل مع كافة جوداته وسيرفراته المفتوحة.`);
+        
+        console.log(`\n📁 تم التحديث الشامل! ملف [movies.json] جاهز ويحتوي على الروابط الأصلية المفتوحة والغير محمية بنجاح 🎯.`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع بالسكريبت:', error);
