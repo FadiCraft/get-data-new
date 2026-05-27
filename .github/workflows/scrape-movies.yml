@@ -23,7 +23,7 @@ jobs:
     - name: Install dependencies
       run: |
         npm init -y
-        npm install playwright playwright-extra puppeteer-extra-plugin-stealth
+        npm install playwright playwright-extra puppeteer-extra-plugin-stealth axios
     
     - name: Install Playwright browsers
       run: npx playwright install chromium
@@ -37,21 +37,21 @@ jobs:
     
     - name: Upload Debug Videos, Screenshots & JSON
       uses: actions/upload-artifact@v4
-      if: always() # يضمن الرفع حتى لو فشل السكريبت لتشاهد أين توقف المتصفح
+      if: always()
       with:
         name: playwright-debug-files
         path: |
           *.png
           videos/
-          single_movie_result.json
-          movies_with_servers.json
+          posters/
+          movies.json
         retention-days: 5
     
     - name: Commit and push changes
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        git add *.json || true 
+        git add *.json posters/ || true 
         git diff --quiet && git diff --staged --quiet || (git commit -m "📊 Auto-update movies data [skip ci]" && git push)
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
