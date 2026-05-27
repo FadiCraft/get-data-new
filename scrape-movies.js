@@ -25,10 +25,10 @@ function decodeServerLink(rawLink) {
 // دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على نطاق الـ iframe
 function getServerPriority(url) {
     const lowerUrl = url.toLowerCase();
-    if (lowerUrl.includes('vidmoly')) return 1; // الأولوية الأولى
-    if (lowerUrl.includes('vidara')) return 2;  // الأولوية الثانية
-    if (lowerUrl.includes('voe')) return 3;     // الأولوية الثالثة
-    return 4;                                   // أي سيرفر آخر
+    if (lowerUrl.includes('vidmoly')) return 1;
+    if (lowerUrl.includes('vidara')) return 2; 
+    if (lowerUrl.includes('voe')) return 3;    
+    return 4;                                  
 }
 
 // دالة مخصصة لجمع وتصفية السيرفرات من الصفحة الحالية
@@ -165,6 +165,11 @@ async function scrapeMovies() {
         movie.extracted_data.default_quality_servers = defaultServers;
         console.log(`✅ تم استخراج (${defaultServers.length}) سيرفر للجودة الافتراضية.`);
 
+        // التقاط الروابط الخام الحالية قبل الضغط للمقارنة بها لاحقاً
+        const oldLinks = await page.evaluate(() => {
+            return Array.from(document.querySelectorAll('.servers__list ul li')).map(li => li.getAttribute('data-link'));
+        });
+
         // 2. منطق فتح قائمة الجودات والتحويل لأعلى جودة
         console.log('⚙️ جاري محاولة فتح قائمة الجودات وتحديد أعلى جودة...');
         const switcherSelector = '.quality__swither.full__767, .quality__swither';
@@ -199,19 +204,35 @@ async function scrapeMovies() {
                 const qualityItems = page.locator('.qualities__list li');
                 await qualityItems.nth(targetQualityData.selectorIndex).click();
                 
-                console.log('⏳ تم النقر. جاري الانتظار حتى تختفي كلمة "جاري التحميل..." وتظهر السيرفرات الجديدة...');
-                
-                // التعديل الجوهري: ننتظر أولاً ظهور السيرفرات الجديدة داخل الـ قائمة ul li
+                console.log('⏳ تم النقر. جاري مراقبة وتأكيد استبدال السيرفرات بالكامل...');
+
+                // التعديل الجوهري والذكي: ننتظر برمجياً حتى تصبح الروابط داخل الـ li مختلفة تماماً عن الروابط القديمة
                 try {
-                    await page.waitForSelector('.servers__list ul li', { timeout: 15000 });
-                    // إعطاء مهلة إضافية ثانية واحدة لتأكيد استقرار الصفحة تماماً
-                    await page.waitForTimeout(2000); 
+                    await page.waitForFunction((oldLinksArray) => {
+                        const currentElements = document.querySelectorAll('.servers__list ul li');
+                        if (currentElements.length === 0) return false;
+                        
+                        // التأكد من أن الصفحة لا تعرض كلمة "جاري التحميل" فقط
+                        const containerText = document.querySelector('.servers__list')?.textContent || '';
+                        if (containerText.includes('جاري التحميل')) return false;
+
+                        const currentLinks = Array.from(currentElements).map(li => li.getAttribute('data-link'));
+                        
+                        // إذا كانت الروابط الحالية مطابقة تماماً للقديمة، هذا يعني أن الصفحة لم تتحدث بعد
+                        if (currentLinks.length === oldLinksArray.length && currentLinks.every((val, i) => val === oldLinksArray[i])) {
+                            return false; 
+                        }
+                        return true; // السيرفرات تغيرت والجديدة استقرت بالكامل
+                    }, oldLinks, { timeout: 20000 });
+
+                    // وقت أمان إضافي للتأكد من انتهاء أي معالجة جافا سكريبت بالخلفية
+                    await page.waitForTimeout(4000);
                 } catch (e) {
-                    console.log('⚠️ استغرق تحميل السيرفرات الجديدة وقتاً طويلاً، سيتم المحاولة مع مهلة ثابته.');
-                    await page.waitForTimeout(8000);
+                    console.log('⚠️ لم يتم رصد تغير الروابط تلقائياً، سيتم الاعتماد على مهلة زمنية ثابتة قصوى.');
+                    await page.waitForTimeout(10000);
                 }
 
-                // 3. إعادة استخراج السيرفرات الجديدة بعد التحويل الاستقرار
+                // 3. إعادة استخراج السيرفرات الجديدة بعد التحويل والاستقرار
                 console.log('📊 استخراج سيرفرات الجودة العالية الحالية...');
                 const highServers = await extractAndProcessServers(page);
                 movie.extracted_data.high_quality_servers = highServers;
