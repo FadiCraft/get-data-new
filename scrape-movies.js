@@ -5,8 +5,9 @@ chromium.use(stealth);
 const fs = require('fs');
 const path = require('path');
 
-// دالة فك تشفير روابط الـ Base64
+// دالة فك تشفير روابط الـ Base64 (سنبقيها للاحتياط في الجودة الافتراضية)
 function decodeServerLink(rawLink) {
+    if (!rawLink) return '';
     try {
         let base64String = '';
         if (rawLink.includes('url=')) {
@@ -22,57 +23,13 @@ function decodeServerLink(rawLink) {
     }
 }
 
-// دالة ذكية لإعطاء وزن/أولوية لكل سيرفر بناءً على نطاق الـ iframe
 function getServerPriority(url) {
+    if (!url) return 4;
     const lowerUrl = url.toLowerCase();
     if (lowerUrl.includes('vidmoly')) return 1;
     if (lowerUrl.includes('vidara')) return 2; 
     if (lowerUrl.includes('voe')) return 3;    
     return 4;                                  
-}
-
-// دالة مخصصة لجمع وتصفية السيرفرات من الصفحة الحالية
-async function extractAndProcessServers(page) {
-    const rawServers = await page.evaluate(() => {
-        const serverItems = document.querySelectorAll('.servers__list ul li');
-        const extracted = [];
-        serverItems.forEach((li) => {
-            const nameElement = li.querySelector('span');
-            const link = li.getAttribute('data-link');
-            if (link) {
-                extracted.push({
-                    name: nameElement ? nameElement.textContent.trim() : 'سيرفر غير معروف',
-                    raw_link: link.trim(),
-                    quality: li.getAttribute('data-qu') || 'unknown'
-                });
-            }
-        });
-        return extracted;
-    });
-
-    let processedServers = [];
-    for (const srv of rawServers) {
-        if (srv.name.includes('عرب سيد')) {
-            continue; 
-        }
-
-        const cleanIframeUrl = decodeServerLink(srv.raw_link);
-        
-        processedServers.push({
-            name: srv.name,
-            quality: srv.quality,
-            iframe_url: cleanIframeUrl,
-            priority: getServerPriority(cleanIframeUrl)
-        });
-    }
-
-    processedServers.sort((a, b) => a.priority - b.priority);
-
-    return processedServers.map((srv, index) => ({
-        name: `سيرفر ${index + 1}`,
-        quality: srv.quality,
-        iframe_url: srv.iframe_url
-    }));
 }
 
 async function scrapeMovies() {
@@ -161,16 +118,32 @@ async function scrapeMovies() {
 
         // 1. استخراج سيرفرات الجودة الافتراضية الأولى
         console.log('📊 استخراج سيرفرات الجودة الافتراضية أولاً...');
-        const defaultServers = await extractAndProcessServers(page);
-        movie.extracted_data.default_quality_servers = defaultServers;
-        console.log(`✅ تم استخراج (${defaultServers.length}) سيرفر للجودة الافتراضية.`);
-
-        // التقاط الروابط الخام الحالية قبل الضغط للمقارنة بها لاحقاً
-        const oldLinks = await page.evaluate(() => {
-            return Array.from(document.querySelectorAll('.servers__list ul li')).map(li => li.getAttribute('data-link'));
+        const rawDefaultServers = await page.evaluate(() => {
+            return Array.from(document.querySelectorAll('.servers__list ul li')).map(li => ({
+                name: li.querySelector('span')?.textContent.trim() || 'سيرفر',
+                link: li.getAttribute('data-link')
+            }));
         });
 
-        // 2. منطق فتح قائمة الجودات والتحويل لأعلى جودة
+        for (let srv of rawDefaultServers) {
+            if (srv.name.includes('عرب سيد') || !srv.link) continue;
+            const decoded = decodeServerLink(srv.link);
+            movie.extracted_data.default_quality_servers.push({
+                name: srv.name,
+                iframe_url: decoded,
+                priority: getServerPriority(decoded)
+            });
+        }
+        // ترتيب وتسمية الجودة الافتراضية
+        movie.extracted_data.default_quality_servers.sort((a, b) => a.priority - b.priority);
+        movie.extracted_data.default_quality_servers = movie.extracted_data.default_quality_servers.map((srv, idx) => ({
+            name: `سيرفر ${idx + 1}`,
+            iframe_url: srv.iframe_url
+        }));
+
+        console.log(`✅ تم استخراج (${movie.extracted_data.default_quality_servers.length}) سيرفر للجودة الافتراضية.`);
+
+        // 2. التحويل لأعلى جودة (1080p)
         console.log('⚙️ جاري محاولة فتح قائمة الجودات وتحديد أعلى جودة...');
         const switcherSelector = '.quality__swither.full__767, .quality__swither';
         const isSwitcherVisible = await page.locator(switcherSelector).count();
@@ -194,7 +167,6 @@ async function scrapeMovies() {
                         }
                     }
                 });
-
                 return { highestQuality, selectorIndex };
             });
 
@@ -204,46 +176,62 @@ async function scrapeMovies() {
                 const qualityItems = page.locator('.qualities__list li');
                 await qualityItems.nth(targetQualityData.selectorIndex).click();
                 
-                console.log('⏳ تم النقر. جاري مراقبة وتأكيد استبدال السيرفرات بالكامل...');
+                console.log('⏳ جاري الانتظار حتى يستقر هيكل الجودة العالية...');
+                await page.waitForTimeout(6000); // مهلة ثابتة لضمان بناء الهيكل الجديد بالكامل
 
-                // التعديل الجوهري والذكي: ننتظر برمجياً حتى تصبح الروابط داخل الـ li مختلفة تماماً عن الروابط القديمة
-                try {
-                    await page.waitForFunction((oldLinksArray) => {
-                        const currentElements = document.querySelectorAll('.servers__list ul li');
-                        if (currentElements.length === 0) return false;
-                        
-                        // التأكد من أن الصفحة لا تعرض كلمة "جاري التحميل" فقط
-                        const containerText = document.querySelector('.servers__list')?.textContent || '';
-                        if (containerText.includes('جاري التحميل')) return false;
+                // 3. طريقة النقر المباشر (لأن الـ HTML الجديد لا يحتوي على روابط مباشرة)
+                console.log('🎯 بدء كشط السيرفرات بالاعتماد على النقر الفعلي على الهيكل الجديد...');
+                
+                const serverElements = page.locator('.servers__list ul li');
+                const count = await serverElements.count();
+                console.log(`📊 تم العثور على عدد (${count}) سيرفرات مبدئية في الهيكل الجديد.`);
 
-                        const currentLinks = Array.from(currentElements).map(li => li.getAttribute('data-link'));
-                        
-                        // إذا كانت الروابط الحالية مطابقة تماماً للقديمة، هذا يعني أن الصفحة لم تتحدث بعد
-                        if (currentLinks.length === oldLinksArray.length && currentLinks.every((val, i) => val === oldLinksArray[i])) {
-                            return false; 
-                        }
-                        return true; // السيرفرات تغيرت والجديدة استقرت بالكامل
-                    }, oldLinks, { timeout: 20000 });
+                let tempHighServers = [];
 
-                    // وقت أمان إضافي للتأكد من انتهاء أي معالجة جافا سكريبت بالخلفية
-                    await page.waitForTimeout(4000);
-                } catch (e) {
-                    console.log('⚠️ لم يتم رصد تغير الروابط تلقائياً، سيتم الاعتماد على مهلة زمنية ثابتة قصوى.');
-                    await page.waitForTimeout(10000);
+                for (let i = 0; i < count; i++) {
+                    const srvLocator = serverElements.nth(i);
+                    const serverName = await srvLocator.locator('span').textContent();
+
+                    // استبعاد سيرفر عرب سيد
+                    if (serverName.includes('عرب سيد')) {
+                        console.log('⏩ تخطي سيرفر عرب سيد...');
+                        continue;
+                    }
+
+                    console.log(`👇 جاري النقر النشط على: [${serverName.trim()}] لاستخراج رابطه المباشر...`);
+                    await srvLocator.click();
+                    await page.waitForTimeout(2500); // الانتظار حتى يقوم جافا سكريبت الموقع بحقن الـ iframe الخاص بهذا السيرفر في الصفحة
+
+                    // التقاط رابط الـ iframe الحالي الفعال بعد النقر
+                    const iframeUrl = await page.evaluate(() => {
+                        const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
+                        return iframe ? iframe.src : null;
+                    });
+
+                    if (iframeUrl && !iframeUrl.includes('about:blank')) {
+                        console.log(`🔗 تم التقاط الرابط بنجاح: ${iframeUrl}`);
+                        tempHighServers.push({
+                            name: serverName.trim(),
+                            iframe_url: iframeUrl,
+                            priority: getServerPriority(iframeUrl)
+                        });
+                    } else {
+                        console.log(`⚠️ لم نتمكن من التقاط الـ iframe لهذا السيرفر.`);
+                    }
                 }
 
-                // 3. إعادة استخراج السيرفرات الجديدة بعد التحويل والاستقرار
-                console.log('📊 استخراج سيرفرات الجودة العالية الحالية...');
-                const highServers = await extractAndProcessServers(page);
-                movie.extracted_data.high_quality_servers = highServers;
-                console.log(`✅ تم استخراج (${highServers.length}) سيرفر للجودة العالية الجديدة.`);
-            } else {
-                console.log('⚠️ لم يتم العثور على جودات متعددة صالحة داخل القائمة المنسدلة.');
+                // ترتيب السيرفرات للجودة العالية وإعادة تسميتها
+                tempHighServers.sort((a, b) => a.priority - b.priority);
+                movie.extracted_data.high_quality_servers = tempHighServers.map((srv, idx) => ({
+                    name: `سيرفر ${idx + 1}`,
+                    iframe_url: srv.iframe_url
+                }));
+
+                console.log(`✅ تم استخراج (${movie.extracted_data.high_quality_servers.length}) سيرفر للجودة العالية الجديدة.`);
             }
-        } else {
-            console.log('⚠️ لم يتم العثور على زر تبديل الجودات في هذه الصفحة.');
         }
 
+        // حفظ النتيجة النهائية
         movie.servers = movie.extracted_data.high_quality_servers.length > 0 
             ? movie.extracted_data.high_quality_servers 
             : movie.extracted_data.default_quality_servers;
