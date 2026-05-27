@@ -5,7 +5,7 @@ chromium.use(stealth);
 const fs = require('fs');
 const path = require('path');
 
-// دالة فك تشفير روابط الـ Base64 (سنبقيها للاحتياط في الجودة الافتراضية)
+// دالة فك تشفير روابط الـ Base64
 function decodeServerLink(rawLink) {
     if (!rawLink) return '';
     try {
@@ -23,6 +23,7 @@ function decodeServerLink(rawLink) {
     }
 }
 
+// دالة تحديد الأولوية للسيرفرات
 function getServerPriority(url) {
     if (!url) return 4;
     const lowerUrl = url.toLowerCase();
@@ -116,7 +117,7 @@ async function scrapeMovies() {
         console.log('⏳ انتظار لفك شيفرة حاوية السيرفرات (الجودة الافتراضية)...');
         await page.waitForTimeout(7000);
 
-        // 1. استخراج سيرفرات الجودة الافتراضية الأولى
+        // 1. استخراج سيرفرات الجودة الافتراضية
         console.log('📊 استخراج سيرفرات الجودة الافتراضية أولاً...');
         const rawDefaultServers = await page.evaluate(() => {
             return Array.from(document.querySelectorAll('.servers__list ul li')).map(li => ({
@@ -134,7 +135,6 @@ async function scrapeMovies() {
                 priority: getServerPriority(decoded)
             });
         }
-        // ترتيب وتسمية الجودة الافتراضية
         movie.extracted_data.default_quality_servers.sort((a, b) => a.priority - b.priority);
         movie.extracted_data.default_quality_servers = movie.extracted_data.default_quality_servers.map((srv, idx) => ({
             name: `سيرفر ${idx + 1}`,
@@ -177,14 +177,11 @@ async function scrapeMovies() {
                 await qualityItems.nth(targetQualityData.selectorIndex).click();
                 
                 console.log('⏳ جاري الانتظار حتى يستقر هيكل الجودة العالية...');
-                await page.waitForTimeout(6000); // مهلة ثابتة لضمان بناء الهيكل الجديد بالكامل
+                await page.waitForTimeout(6000);
 
-                // 3. طريقة النقر المباشر (لأن الـ HTML الجديد لا يحتوي على روابط مباشرة)
                 console.log('🎯 بدء كشط السيرفرات بالاعتماد على النقر الفعلي على الهيكل الجديد...');
-                
                 const serverElements = page.locator('.servers__list ul li');
                 const count = await serverElements.count();
-                console.log(`📊 تم العثور على عدد (${count}) سيرفرات مبدئية في الهيكل الجديد.`);
 
                 let tempHighServers = [];
 
@@ -192,35 +189,28 @@ async function scrapeMovies() {
                     const srvLocator = serverElements.nth(i);
                     const serverName = await srvLocator.locator('span').textContent();
 
-                    // استبعاد سيرفر عرب سيد
                     if (serverName.includes('عرب سيد')) {
-                        console.log('⏩ تخطي سيرفر عرب سيد...');
                         continue;
                     }
 
                     console.log(`👇 جاري النقر النشط على: [${serverName.trim()}] لاستخراج رابطه المباشر...`);
                     await srvLocator.click();
-                    await page.waitForTimeout(2500); // الانتظار حتى يقوم جافا سكريبت الموقع بحقن الـ iframe الخاص بهذا السيرفر في الصفحة
+                    await page.waitForTimeout(2500);
 
-                    // التقاط رابط الـ iframe الحالي الفعال بعد النقر
                     const iframeUrl = await page.evaluate(() => {
                         const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
                         return iframe ? iframe.src : null;
                     });
 
                     if (iframeUrl && !iframeUrl.includes('about:blank')) {
-                        console.log(`🔗 تم التقاط الرابط بنجاح: ${iframeUrl}`);
                         tempHighServers.push({
                             name: serverName.trim(),
                             iframe_url: iframeUrl,
                             priority: getServerPriority(iframeUrl)
                         });
-                    } else {
-                        console.log(`⚠️ لم نتمكن من التقاط الـ iframe لهذا السيرفر.`);
                     }
                 }
 
-                // ترتيب السيرفرات للجودة العالية وإعادة تسميتها
                 tempHighServers.sort((a, b) => a.priority - b.priority);
                 movie.extracted_data.high_quality_servers = tempHighServers.map((srv, idx) => ({
                     name: `سيرفر ${idx + 1}`,
@@ -231,13 +221,46 @@ async function scrapeMovies() {
             }
         }
 
-        // حفظ النتيجة النهائية
+        // اختيار مصفوفة السيرفرات النهائية للحفاظ على الهيكل القديم
         movie.servers = movie.extracted_data.high_quality_servers.length > 0 
             ? movie.extracted_data.high_quality_servers 
             : movie.extracted_data.default_quality_servers;
 
+        // --- البدء في معالجة وحفظ البيانات بملف movies.json المحلي ---
+        const moviesFilePath = path.join(process.cwd(), 'movies.json');
+        let localMoviesList = [];
+
+        // 1. قراءة البيانات القديمة من ملف movies.json إذا كان موجوداً لمنع المسح العشوائي
+        if (fs.existsSync(moviesFilePath)) {
+            try {
+                const fileContent = fs.readFileSync(moviesFilePath, 'utf-8');
+                localMoviesList = JSON.parse(fileContent);
+                if (!Array.isArray(localMoviesList)) {
+                    localMoviesList = [];
+                }
+            } catch (parseError) {
+                console.log('⚠️ حدث خطأ أثناء قراءة ملف movies.json القديم، سيتم بدء قائمة جديدة.');
+                localMoviesList = [];
+            }
+        }
+
+        // 2. التحقق مما إذا كان الفيلم الحالي مضافاً مسبقاً لمنع التكرار (تحديثه إن وجد، أو إضافته في البداية)
+        const existingMovieIndex = localMoviesList.findIndex(m => m.movie_url === movie.movie_url || m.title === movie.title);
+        
+        if (existingMovieIndex !== -1) {
+            console.log('🔄 الفيلم موجود مسبقاً في القائمة المحلية، جاري تحديث بيانات السيرفرات الخاصة به...');
+            localMoviesList[existingMovieIndex] = movie;
+        } else {
+            console.log('➕ فيلم جديد تماماً، جاري إضافته إلى رأس القائمة في ملف movies.json...');
+            localMoviesList.unshift(movie); // Unshift تضمن نزوله كأول فيلم بالملف
+        }
+
+        // 3. حفظ القائمة الكاملة المحدثة بداخل ملف movies.json المحلي
+        fs.writeFileSync(moviesFilePath, JSON.stringify(localMoviesList, null, 2), 'utf-8');
+        console.log(`\n📁 تم الحفظ والتحديث بنجاح داخل الملف الرئيسي المجمع: movies.json`);
+        
+        // للاحتفاظ أيضاً بنسخة الفيلم المنفرد (اختياري)
         fs.writeFileSync(path.join(process.cwd(), 'single_movie_result.json'), JSON.stringify(movie, null, 2), 'utf-8');
-        console.log(`\n📁 تم حفظ ملف البيانات بنجاح: single_movie_result.json`);
 
     } catch (error) {
         console.error('❌ حدث خطأ غير متوقع:', error);
