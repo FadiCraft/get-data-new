@@ -1,5 +1,54 @@
 [
   {
+    "title": "فيلم الست ( 2025 )",
+    "movie_url": "https://m.arabseed.show/%d9%81%d9%8a%d9%84%d9%85-%d8%a7%d9%84%d8%b3%d8%aa-2025/",
+    "watch_url": "https://m.arabseed.show/%d9%81%d9%8a%d9%84%d9%85-%d8%a7%d9%84%d8%b3%d8%aa-2025/watch/",
+    "extracted_data": {
+      "default_quality_servers": [
+        {
+          "name": "سيرفر 1",
+          "iframe_url": "https://vidmoly.biz/embed-18uz9yezuglu.html"
+        },
+        {
+          "name": "سيرفر 2",
+          "iframe_url": "https://luluvid.com/e/gj0kofnxcrqc"
+        },
+        {
+          "name": "سيرفر 3",
+          "iframe_url": "https://bysezejataos.com/e/nuap12f8fg2g"
+        }
+      ],
+      "high_quality_servers": [
+        {
+          "name": "سيرفر 1",
+          "iframe_url": "https://m.asd.ink/play/?id=aHR0cHM6Ly9sdWx1dmlkLmNvbS9lL2hsMnZsMTVpNWxyNg"
+        },
+        {
+          "name": "سيرفر 2",
+          "iframe_url": "https://m.asd.ink/play/?id=aHR0cHM6Ly92aWRtb2x5LmJpei9lbWJlZC0yeGVtN2preWEzaGYuaHRtbA"
+        },
+        {
+          "name": "سيرفر 3",
+          "iframe_url": "https://m.asd.ink/play/?id=aHR0cHM6Ly9ieXNlemVqYXRhb3MuY29tL2UveWNid2ZhNnBrOWI2"
+        }
+      ]
+    },
+    "servers": [
+      {
+        "name": "سيرفر 1",
+        "iframe_url": "https://m.asd.ink/play/?id=aHR0cHM6Ly9sdWx1dmlkLmNvbS9lL2hsMnZsMTVpNWxyNg"
+      },
+      {
+        "name": "سيرفر 2",
+        "iframe_url": "https://m.asd.ink/play/?id=aHR0cHM6Ly92aWRtb2x5LmJpei9lbWJlZC0yeGVtN2preWEzaGYuaHRtbA"
+      },
+      {
+        "name": "سيرفر 3",
+        "iframe_url": "https://m.asd.ink/play/?id=aHR0cHM6Ly9ieXNlemVqYXRhb3MuY29tL2UveWNid2ZhNnBrOWI2"
+      }
+    ]
+  },
+  {
     "title": "فيلم سينما منتصف الليل ( 2026 )",
     "url": "https://m.arabseed.show/%d9%81%d9%8a%d9%84%d9%85-%d8%b3%d9%8a%d9%86%d9%85%d8%a7-%d9%85%d9%86%d8%aa%d8%b5%d9%81-%d8%a7%d9%84%d9%84%d9%8a%d9%84-2026/",
     "image": "https://m.arabseed.show/wp-content/uploads/2026/05/%D8%B3%D9%8A%D9%86%D9%85%D8%A7-%D9%85%D9%86%D8%AA%D8%B5%D9%81-%D8%A7%D9%84%D9%84%D9%8A%D9%84-350x428.webp",
