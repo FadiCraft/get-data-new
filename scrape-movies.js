@@ -50,17 +50,17 @@ async function downloadAndConvertPoster(imageUrl, movieTitle) {
         const fileName = `${safeTitle}_${Date.now()}.png`; 
         const localPath = path.join(posterDir, fileName);
 
-        console.log(`📸 جاري تحميل البوستر: ${movieTitle}`);
+        console.log(`📸 جاري تحميل البوستر للفيلم: ${movieTitle}`);
         const response = await axios({
             url: imageUrl,
             method: 'GET',
             responseType: 'arraybuffer',
-            timeout: 10000 // مهلة 10 ثواني كحد أقصى لمنع التعليق
+            timeout: 15000
         });
 
         fs.writeFileSync(localPath, response.data);
         
-        // تعديل الرابط ليصبح رابط GitHub المباشر (الملفات الخام raw) بدلاً من المسار المحلي
+        // الرابط المطلوب المباشر على جيت هاب
         return `https://raw.githubusercontent.com/FadiCraft/get-data-new/main/posters/${fileName}`; 
     } catch (error) {
         console.error(`❌ فشل تحميل صورة الفيلم (${movieTitle}):`, error.message);
@@ -69,16 +69,10 @@ async function downloadAndConvertPoster(imageUrl, movieTitle) {
 }
 
 async function scrapeMovies() {
-    console.log('🚀 جاري تشغيل المتصفح بوضعية سريعة...');
+    console.log('🚀 جاري تشغيل المتصفح...');
     const browser = await chromium.launch({
         headless: true,
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox', 
-            '--disable-blink-features=AutomationControlled',
-            '--disable-gl-drawing-for-tests', // تحسينات لتسريع الأداء وتقليل استهلاك الرام
-            '--disable-features=IsolateOrigins,site-per-process'
-        ]
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
     });
 
     const context = await browser.newContext({
@@ -87,34 +81,28 @@ async function scrapeMovies() {
         timezoneId: 'Asia/Riyadh'
     });
 
-    // حظر الصور والملفات غير الضرورية لتسريع التصفح بشكل كبير جداً
-    await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,css,woff,woff2,ttf}', (route, request) => {
-        // نسمح فقط بتحميل البوستر الأصلي من خلال دالة axios، أما داخل المتصفح فنقوم بحظرها لتوفير الوقت والبيانات
-        route.abort();
-    });
-
     const page = await context.newPage();
     let allMoviesResults = [];
 
     try {
         console.log('🔄 جاري فتح الصفحة الرئيسية...');
-        await page.goto('https://m.asd.ink/category/arabic-movies-14/', { waitUntil: 'commit', timeout: 60000 });
+        await page.goto('https://m.asd.ink/category/arabic-movies-14/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         
-        // الانتظار حتى يظهر حاوي الأفلام بدلاً من الانتظار الزمني العشوائي
-        await page.waitForSelector('li .item__contents a.movie__block', { timeout: 15000 });
+        // انتظار تحميل عنصر القائمة لتأكيد وجود الأفلام
+        await page.waitForSelector('li .item__contents a.movie__block', { timeout: 20000 });
 
         const movieUrls = await page.evaluate(() => {
             const links = document.querySelectorAll('li .item__contents a.movie__block');
             return Array.from(links).map(a => a.href);
         });
 
-        console.log(`🎯 تم العثور على (${movieUrls.length}) فيلم. بدء الكشط السريع...`);
+        console.log(`🎯 تم العثور على (${movieUrls.length}) فيلم. جاري الاستخراج الكامل بالتتابع السريع...`);
 
         for (const movieUrl of movieUrls) {
             try {
                 console.log(`\n🎬 --------------------------------------------------`);
-                console.log(`🔄 فتح صفحة الفيلم: ${movieUrl}`);
-                await page.goto(movieUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+                console.log(`🔄 جاري فتح صفحة الفيلم: ${movieUrl}`);
+                await page.goto(movieUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
                 const movieDetails = await page.evaluate(() => {
                     const title = document.querySelector('.post__name')?.textContent.trim() || '';
@@ -146,7 +134,6 @@ async function scrapeMovies() {
                     return { title, poster, story, trailer, rating, category, genre, duration, year, quality, country };
                 });
 
-                // تحميل البوستر والحصول على رابط جيت هاب المباشر
                 const githubPosterPath = await downloadAndConvertPoster(movieDetails.poster, movieDetails.title);
 
                 let currentMovieResult = {
@@ -166,8 +153,11 @@ async function scrapeMovies() {
 
                 // الانتقال لصفحة المشاهدة
                 const watchUrl = movieUrl.endsWith('/') ? movieUrl + 'watch/' : movieUrl + '/watch/';
-                console.log(`🍿 جاري جمع السيرفرات...`);
-                await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+                console.log(`🍿 جاري تجميع السيرفرات والجودات...`);
+                await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+                
+                // انتظار تحميل حاوي المشاهدة الأساسي للتأكد من جاهزية الأكواد
+                await page.waitForSelector('.servers__list', { timeout: 15000 }).catch(() => {});
 
                 const targetQualities = ["480", "720", "1080"];
 
@@ -175,17 +165,13 @@ async function scrapeMovies() {
                     const switcherSelector = '.quality__swither.full__767, .quality__swither';
                     if (await page.locator(switcherSelector).count() > 0) {
                         await page.click(switcherSelector);
+                        await page.waitForTimeout(400); // وقت قصير جداً لفتح القائمة المنسدلة
                     }
 
                     const qualityLiSelector = `.qualities__list li[data-quality="${qKey}"]`;
                     if (await page.locator(qualityLiSelector).count() > 0) {
                         await page.click(qualityLiSelector);
-                        
-                        // الانتظار الذكي للتأكد من تحديث السيرفرات بناء على الجودة الجديدة المحددة
-                        await page.waitForFunction((quality) => {
-                            const activeLi = document.querySelector('.qualities__list li.active, .qualities__list li');
-                            return activeLi ? true : false;
-                        }, qKey, { timeout: 5000 }).catch(() => {});
+                        await page.waitForTimeout(1500); // انتظار تنفيذ كود السيرفرات للجودة الجديدة بالكامل
 
                         const serverElements = page.locator('.servers__list ul li');
                         const count = await serverElements.count();
@@ -197,19 +183,8 @@ async function scrapeMovies() {
 
                             if (serverName.includes('عرب سيد')) continue; 
 
-                            // جلب الـ src القديم للمقارنة والتأكد من تغير السيرفر بعد النقر
-                            const oldSrc = await page.evaluate(() => {
-                                const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
-                                return iframe ? iframe.src : '';
-                            });
-
                             await srvLocator.click();
-                            
-                            // انتظار ذكي جداً: ننتظر حتى يتغير رابط الـ Iframe أو تنتهي الـ 2000 مللي ثانية كحد أقصى (أسرع بكثير من الاستجابة الثابتة)
-                            await page.waitForFunction((old) => {
-                                const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
-                                return iframe && iframe.src !== old;
-                            }, oldSrc, { timeout: 2000 }).catch(() => {});
+                            await page.waitForTimeout(800); // انتظار استبدال الـ iframe بدون تسرع مفرط يسبب ضياع الرابط
 
                             const rawIframeUrl = await page.evaluate(() => {
                                 const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
@@ -225,10 +200,10 @@ async function scrapeMovies() {
                             }
                         }
 
-                        // ترتيب السيرفرات حسب الأولوية
+                        // ترتيب السيرفرات حسب الأولوية المفضلة
                         extractedServers.sort((a, b) => a.priority - b.priority);
                         
-                        // الفرد السطحي داخل كائن الفيلم
+                        // فرد السيرفرات بشكل مسطح داخل كائن الفيلم الأساسي
                         extractedServers.forEach((srv, idx) => {
                             currentMovieResult[`server_${idx + 1}_${qKey}p_url`] = srv.iframe_url;
                         });
@@ -236,20 +211,19 @@ async function scrapeMovies() {
                 }
 
                 allMoviesResults.push(currentMovieResult);
-                console.log(`✅ تم استخراج فيلم: ${movieDetails.title}`);
+                console.log(`✅ تم الانتهاء من استخراج وحفظ فيلم: ${movieDetails.title}`);
 
             } catch (movieError) {
-                console.error(`❌ خطأ في الفيلم (${movieUrl}):`, movieError.message);
+                console.error(`❌ خطأ أثناء معالجة الفيلم (${movieUrl}):`, movieError.message);
             }
         }
 
-        // حفظ الملف
         const moviesFilePath = path.join(process.cwd(), 'movies.json');
         fs.writeFileSync(moviesFilePath, JSON.stringify(allMoviesResults, null, 2), 'utf-8');
-        console.log(`\n🎉 اكتمل العمل! تم حفظ البيانات في [movies.json].`);
+        console.log(`\n🎉 اكتمل العمل بنجاح! تم تحديث ملف [movies.json] بكامل البيانات المسطحة.`);
 
     } catch (error) {
-        console.error('❌ خطأ عام بالسكريبت:', error);
+        console.error('❌ حدث خطأ غير متوقع بالسكريبت العام:', error);
     } finally {
         await context.close();
         await browser.close();
