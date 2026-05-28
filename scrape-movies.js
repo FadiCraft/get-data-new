@@ -34,10 +34,10 @@ function getServerPriority(url) {
     if (lowerUrl.includes('vidmoly')) return 1;
     if (lowerUrl.includes('vidara')) return 2; 
     if (lowerUrl.includes('voe')) return 3;    
-    return 4;                                  
+    return 4;                                   
 }
 
-// دالة تحميل الصورة محلياً وتحويلها (أو حفظها) بصيغة PNG
+// دالة تحميل الصورة محلياً وتحويلها ورسم رابط GitHub الكامل لها
 async function downloadAndConvertPoster(imageUrl, movieTitle) {
     if (!imageUrl) return '';
     try {
@@ -50,15 +50,18 @@ async function downloadAndConvertPoster(imageUrl, movieTitle) {
         const fileName = `${safeTitle}_${Date.now()}.png`; 
         const localPath = path.join(posterDir, fileName);
 
-        console.log(`📸 جاري تحميل وتحويل البوستر للفيلم: ${movieTitle}`);
+        console.log(`📸 جاري تحميل البوستر: ${movieTitle}`);
         const response = await axios({
             url: imageUrl,
             method: 'GET',
-            responseType: 'arraybuffer'
+            responseType: 'arraybuffer',
+            timeout: 10000 // مهلة 10 ثواني كحد أقصى لمنع التعليق
         });
 
         fs.writeFileSync(localPath, response.data);
-        return `posters/${fileName}`; 
+        
+        // تعديل الرابط ليصبح رابط GitHub المباشر (الملفات الخام raw) بدلاً من المسار المحلي
+        return `https://raw.githubusercontent.com/FadiCraft/get-data-new/main/posters/${fileName}`; 
     } catch (error) {
         console.error(`❌ فشل تحميل صورة الفيلم (${movieTitle}):`, error.message);
         return imageUrl; 
@@ -66,10 +69,16 @@ async function downloadAndConvertPoster(imageUrl, movieTitle) {
 }
 
 async function scrapeMovies() {
-    console.log('🚀 جاري تشغيل المتصفح...');
+    console.log('🚀 جاري تشغيل المتصفح بوضعية سريعة...');
     const browser = await chromium.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled']
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox', 
+            '--disable-blink-features=AutomationControlled',
+            '--disable-gl-drawing-for-tests', // تحسينات لتسريع الأداء وتقليل استهلاك الرام
+            '--disable-features=IsolateOrigins,site-per-process'
+        ]
     });
 
     const context = await browser.newContext({
@@ -78,30 +87,35 @@ async function scrapeMovies() {
         timezoneId: 'Asia/Riyadh'
     });
 
+    // حظر الصور والملفات غير الضرورية لتسريع التصفح بشكل كبير جداً
+    await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,css,woff,woff2,ttf}', (route, request) => {
+        // نسمح فقط بتحميل البوستر الأصلي من خلال دالة axios، أما داخل المتصفح فنقوم بحظرها لتوفير الوقت والبيانات
+        route.abort();
+    });
+
     const page = await context.newPage();
     let allMoviesResults = [];
 
     try {
         console.log('🔄 جاري فتح الصفحة الرئيسية...');
-        await page.goto('https://m.asd.ink/category/arabic-movies-14/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForTimeout(4000);
+        await page.goto('https://m.asd.ink/category/arabic-movies-14/', { waitUntil: 'commit', timeout: 60000 });
+        
+        // الانتظار حتى يظهر حاوي الأفلام بدلاً من الانتظار الزمني العشوائي
+        await page.waitForSelector('li .item__contents a.movie__block', { timeout: 15000 });
 
-        // استخراج روابط كل الأفلام المتواجدة في الصفحة
         const movieUrls = await page.evaluate(() => {
             const links = document.querySelectorAll('li .item__contents a.movie__block');
             return Array.from(links).map(a => a.href);
         });
 
-        console.log(`🎯 تم العثور على (${movieUrls.length}) فيلم في الصفحة. جاري الكشط بالتتابع...`);
+        console.log(`🎯 تم العثور على (${movieUrls.length}) فيلم. بدء الكشط السريع...`);
 
         for (const movieUrl of movieUrls) {
             try {
                 console.log(`\n🎬 --------------------------------------------------`);
-                console.log(`🔄 جاري فتح صفحة الفيلم: ${movieUrl}`);
-                await page.goto(movieUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-                await page.waitForTimeout(3000);
+                console.log(`🔄 فتح صفحة الفيلم: ${movieUrl}`);
+                await page.goto(movieUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
-                // استخراج تفاصيل الفيلم بصيغة مسطحة (مباشرة تحت بعض)
                 const movieDetails = await page.evaluate(() => {
                     const title = document.querySelector('.post__name')?.textContent.trim() || '';
                     const poster = document.querySelector('.poster-img')?.getAttribute('src') || '';
@@ -110,12 +124,7 @@ async function scrapeMovies() {
                     const rating = document.querySelector('.rating-average')?.textContent.trim() || '';
                     
                     const infoAreaItems = document.querySelectorAll('.info__area__ul > li');
-                    let category = '';
-                    let genre = '';
-                    let duration = '';
-                    let year = '';
-                    let quality = '';
-                    let country = '';
+                    let category = '', genre = '', duration = '', year = '', quality = '', country = '';
                     
                     infoAreaItems.forEach(li => {
                         const labelText = li.querySelector('.title__kit span')?.textContent.trim() || '';
@@ -137,14 +146,13 @@ async function scrapeMovies() {
                     return { title, poster, story, trailer, rating, category, genre, duration, year, quality, country };
                 });
 
-                // تحميل البوستر محلياً بصيغة PNG
-                const localPosterPath = await downloadAndConvertPoster(movieDetails.poster, movieDetails.title);
+                // تحميل البوستر والحصول على رابط جيت هاب المباشر
+                const githubPosterPath = await downloadAndConvertPoster(movieDetails.poster, movieDetails.title);
 
-                // بناء الهيكل النهائي المسطح للفيلم بدون مصفوفات داخلية للسيرفرات
                 let currentMovieResult = {
                     title: movieDetails.title,
                     movie_url: movieUrl,
-                    poster: localPosterPath,
+                    poster: githubPosterPath,
                     story: movieDetails.story,
                     rating: movieDetails.rating,
                     trailer: movieDetails.trailer,
@@ -158,10 +166,8 @@ async function scrapeMovies() {
 
                 // الانتقال لصفحة المشاهدة
                 const watchUrl = movieUrl.endsWith('/') ? movieUrl + 'watch/' : movieUrl + '/watch/';
-                console.log(`🍿 جاري الانتقال لصفحة المشاهدة لتجميع السيرفرات...`);
-                await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-                await page.evaluate(() => window.scrollBy(0, 400));
-                await page.waitForTimeout(4000);
+                console.log(`🍿 جاري جمع السيرفرات...`);
+                await page.goto(watchUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
                 const targetQualities = ["480", "720", "1080"];
 
@@ -169,13 +175,17 @@ async function scrapeMovies() {
                     const switcherSelector = '.quality__swither.full__767, .quality__swither';
                     if (await page.locator(switcherSelector).count() > 0) {
                         await page.click(switcherSelector);
-                        await page.waitForTimeout(800);
                     }
 
                     const qualityLiSelector = `.qualities__list li[data-quality="${qKey}"]`;
                     if (await page.locator(qualityLiSelector).count() > 0) {
                         await page.click(qualityLiSelector);
-                        await page.waitForTimeout(3000); 
+                        
+                        // الانتظار الذكي للتأكد من تحديث السيرفرات بناء على الجودة الجديدة المحددة
+                        await page.waitForFunction((quality) => {
+                            const activeLi = document.querySelector('.qualities__list li.active, .qualities__list li');
+                            return activeLi ? true : false;
+                        }, qKey, { timeout: 5000 }).catch(() => {});
 
                         const serverElements = page.locator('.servers__list ul li');
                         const count = await serverElements.count();
@@ -187,8 +197,19 @@ async function scrapeMovies() {
 
                             if (serverName.includes('عرب سيد')) continue; 
 
+                            // جلب الـ src القديم للمقارنة والتأكد من تغير السيرفر بعد النقر
+                            const oldSrc = await page.evaluate(() => {
+                                const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
+                                return iframe ? iframe.src : '';
+                            });
+
                             await srvLocator.click();
-                            await page.waitForTimeout(1500); 
+                            
+                            // انتظار ذكي جداً: ننتظر حتى يتغير رابط الـ Iframe أو تنتهي الـ 2000 مللي ثانية كحد أقصى (أسرع بكثير من الاستجابة الثابتة)
+                            await page.waitForFunction((old) => {
+                                const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
+                                return iframe && iframe.src !== old;
+                            }, oldSrc, { timeout: 2000 }).catch(() => {});
 
                             const rawIframeUrl = await page.evaluate(() => {
                                 const iframe = document.querySelector('.watch__player__box iframe, #video_player iframe, iframe');
@@ -204,34 +225,31 @@ async function scrapeMovies() {
                             }
                         }
 
-                        // ترتيب السيرفرات حسب الأولوية المفضلة لديك (مثل Vidmoly أولاً)
+                        // ترتيب السيرفرات حسب الأولوية
                         extractedServers.sort((a, b) => a.priority - b.priority);
                         
-                        // هنا يتم الفرد السطحي مباشرة داخل كائن الفيلم الأساسي
+                        // الفرد السطحي داخل كائن الفيلم
                         extractedServers.forEach((srv, idx) => {
-                            const serverIndex = idx + 1;
-                            // ستظهر هكذا في التطبيق: server_1_1080p_url
-                            currentMovieResult[`server_${serverIndex}_${qKey}p_url`] = srv.iframe_url;
+                            currentMovieResult[`server_${idx + 1}_${qKey}p_url`] = srv.iframe_url;
                         });
                     }
                 }
 
                 allMoviesResults.push(currentMovieResult);
-                console.log(`✅ تم الانتهاء من كشط وحفظ فيلم: ${movieDetails.title}`);
+                console.log(`✅ تم استخراج فيلم: ${movieDetails.title}`);
 
             } catch (movieError) {
-                console.error(`❌ خطأ أثناء معالجة الفيلم (${movieUrl}):`, movieError.message);
+                console.error(`❌ خطأ في الفيلم (${movieUrl}):`, movieError.message);
             }
         }
 
-        // حفظ المصفوفة الكاملة لجميع الأفلام في الملف النهائي
+        // حفظ الملف
         const moviesFilePath = path.join(process.cwd(), 'movies.json');
         fs.writeFileSync(moviesFilePath, JSON.stringify(allMoviesResults, null, 2), 'utf-8');
-        
-        console.log(`\n🎉 اكتمل العمل بنجاح! تم تحديث ملف [movies.json] بالهيكل المسطح الجديد تماماً.`);
+        console.log(`\n🎉 اكتمل العمل! تم حفظ البيانات في [movies.json].`);
 
     } catch (error) {
-        console.error('❌ حدث خطأ غير متوقع بالسكريبت العام:', error);
+        console.error('❌ خطأ عام بالسكريبت:', error);
     } finally {
         await context.close();
         await browser.close();
