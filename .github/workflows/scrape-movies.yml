@@ -1,9 +1,9 @@
-name: Scrape Arabic Movies
+name: Scrape Arabic Movies & Series
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # كل 6 ساعات
-  workflow_dispatch:  # تشغيل يدوي
+    - cron: '0 */6 * * *'  # تشغيل تلقائي كل 6 ساعات
+  workflow_dispatch:      # إمكانية التشغيل اليدوي بنقرة زر
   push:
     branches: [ main ]
 
@@ -14,7 +14,9 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-    
+      with:
+        fetch-depth: 0 # مهم جداً لجلب كامل التاريخ وتجنب مشاكل الدمج
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
@@ -32,26 +34,42 @@ jobs:
       run: |
         npx playwright install-deps chromium
     
-    - name: Scrape movies
+    - name: Run Scraper Script
       run: node scrape-movies.js
     
-    - name: Upload Debug Videos, Screenshots & JSON
+    - name: Upload Debug Artifacts (Optional)
       uses: actions/upload-artifact@v4
       if: always()
       with:
         name: playwright-debug-files
         path: |
-          *.png
-          videos/
           posters/
-          movies.json
-        retention-days: 5
+          Movies/
+          Series/
+        retention-days: 3
     
-    - name: Commit and push changes
+    - name: Commit and push changes safely
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        git add *.json posters/ || true 
-        git diff --quiet && git diff --staged --quiet || (git commit -m "📊 Auto-update movies data [skip ci]" && git push)
+        
+        # عمل جلب لأي تحديثات تمت على السيرفر لتفابل الـ Rejection
+        git fetch origin main
+        
+        # إضافة الملفات والمجلدات الجديدة والقديمة
+        git add posters/ Movies/ Series/ *.json || true
+        
+        # التحقق إذا كان هناك أي تغييرات حقيقية لعمل commit
+        if ! git diff --quiet && git diff --staged --quiet; then
+          git commit -m "📊 Auto-update movies and series data [skip ci]"
+          
+          # سحب التعديلات الأخيرة ودمجها ذكياً قبل الدفع لمنع الـ Reject وإصلاح مشكلة الـ fetch first
+          git pull origin main --rebase
+          
+          # الدفع النهائي للسيرفر
+          git push origin main
+        else
+          echo "No changes detected. Skipping commit."
+        fi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
